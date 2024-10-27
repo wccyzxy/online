@@ -1355,6 +1355,8 @@ L.CanvasTileLayer = L.Layer.extend({
 				// Single format: as-is.
 				textMsgHtml = textMsgContent;
 			}
+			this._map.fire('postMessage', {msgId: 'textselectioncontent', args: {MsgHtml: textMsgHtml, MsgPlainText: textMsgPlainText}});
+
 			const hyperlinkTextBox = document.getElementById('hyperlink-text-box');
 			if (hyperlinkTextBox) {
 				// Hyperlink dialog is open, the text selection is for the link text
@@ -2584,15 +2586,13 @@ L.CanvasTileLayer = L.Layer.extend({
 			if (L.Browser.clipboardApiAvailable) {
 				// Just set the selection type, no fetch of the content.
 				this._map._clip.setTextSelectionType('text');
-			} else {
-				// Trigger fetching the selection content, we already need to have
-				// it locally by the time 'copy' is executed.
-				if (this._selectionContentRequest) {
-					clearTimeout(this._selectionContentRequest);
-				}
-				this._selectionContentRequest = setTimeout(L.bind(function () {
-					app.socket.sendMessage('gettextselection mimetype=text/html,text/plain;charset=utf-8');}, this), 100);
 			}
+			if (this._selectionContentRequest) {
+				clearTimeout(this._selectionContentRequest);
+			}
+			this._selectionContentRequest = setTimeout(L.bind(function () {
+				app.socket.sendMessage('gettextselection mimetype=text/html,text/plain;charset=utf-8');
+			}, this), 100);
 		}
 		else {
 			this._selectionHandles.start.setShowSection(false);
