@@ -293,14 +293,11 @@ void ClientSession::handleClipboardRequest(DocumentBroker::ClipboardRequest     
             // Unsupported clipboard request.
             LOG_ERR("Unsupported Clipboard Request from socket #" << socket->getFD()
                                                                   << ". Terminating connection.");
-            std::ostringstream oss;
-            oss << "HTTP/1.1 403 Forbidden\r\n"
-                << "Date: " << Util::getHttpTimeNow() << "\r\n"
-                << "User-Agent: " << http::getAgentString() << "\r\n"
-                << "Content-Length: 0\r\n"
-                << "Connection: close\r\n"
-                << "\r\n";
-            socket->send(oss.str());
+
+            http::Response httpResponse(http::StatusCode::Forbidden);
+            httpResponse.set("Content-Length", "0");
+            httpResponse.set("Connection", "close");
+            socket->send(httpResponse);
             socket->closeConnection(); // Shutdown socket.
             socket->ignoreInput();
             return;
@@ -372,7 +369,7 @@ void ClientSession::handleClipboardRequest(DocumentBroker::ClipboardRequest     
                         {
                             httpSession->setFinishedHandler(std::move(finishedCallback));
 
-                            http::Session::ConnectFailCallback connectFailCallback = [this, url]()
+                            http::Session::ConnectFailCallback connectFailCallback = [this, url](const std::shared_ptr<http::Session>& /* session */)
                             {
                                 LOG_ERR(
                                     "Failed to start an async clipboard download request with URL ["
@@ -403,14 +400,10 @@ void ClientSession::handleClipboardRequest(DocumentBroker::ClipboardRequest     
             }
 
             // FIXME: work harder for error detection ?
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Date: " << Util::getHttpTimeNow() << "\r\n"
-                << "User-Agent: " << http::getAgentString() << "\r\n"
-                << "Content-Length: 0\r\n"
-                << "Connection: close\r\n"
-                << "\r\n";
-            socket->send(oss.str());
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Content-Length", "0");
+            httpResponse.set("Connection", "close");
+            socket->send(httpResponse);
             socket->shutdown();
         }
         else
@@ -434,6 +427,105 @@ void ClientSession::onTileProcessed(TileWireId wireId)
     else
         LOG_INF("Tileprocessed message with an unknown wire-id '" << wireId << "' from session " << getId());
 }
+
+#if !MOBILEAPP
+namespace
+{
+std::shared_ptr<http::Session>
+makeSignatureActionSession(const std::shared_ptr<ClientSession> clientSession,
+                           const std::string& commandName, const std::string& requestUrl)
+{
+    // Create the session and set a finished callback
+    std::shared_ptr<http::Session> httpSession = http::Session::create(requestUrl);
+    if (!httpSession)
+    {
+        LOG_WRN("SignatureAction: failed to create HTTP session");
+        return nullptr;
+    }
+
+    http::Session::FinishedCallback finishedCallback = [clientSession, commandName](const std::shared_ptr<http::Session>& session)
+    {
+        const std::shared_ptr<const http::Response> httpResponse = session->response();
+        Poco::JSON::Object::Ptr resultArguments = new Poco::JSON::Object();
+        resultArguments->set("commandName", commandName);
+
+        bool ok = httpResponse->statusLine().statusCode() == http::StatusCode::OK;
+        resultArguments->set("success", ok);
+
+        const std::string& responseBody = httpResponse->getBody();
+        Poco::JSON::Object::Ptr responseBodyObject = new Poco::JSON::Object();
+        if (!JsonUtil::parseJSON(responseBody, responseBodyObject))
+        {
+            LOG_WRN("SignatureAction: failed to parse response body as JSON");
+            return;
+        }
+        resultArguments->set("result", responseBodyObject);
+
+        std::ostringstream oss;
+        resultArguments->stringify(oss);
+        std::string result = "unocommandresult: " + oss.str();
+        clientSession->sendTextFrame(result);
+    };
+    httpSession->setFinishedHandler(std::move(finishedCallback));
+    return httpSession;
+}
+}
+
+bool ClientSession::handleSignatureAction(const StringVector& tokens)
+{
+    const std::string commandName = tokens[1];
+    // Make the HTTP session: this requires an URL
+    Poco::JSON::Object::Ptr serverPrivateInfoObject = new Poco::JSON::Object();
+    if (!JsonUtil::parseJSON(getServerPrivateInfo(), serverPrivateInfoObject))
+    {
+        LOG_WRN("SignatureAction: failed to parse server private info as JSON");
+        return false;
+    }
+    std::string requestUrl;
+    JsonUtil::findJSONValue(serverPrivateInfoObject, "ESignatureBaseUrl", requestUrl);
+    if (commandName == ".uno:PrepareSignature")
+    {
+        requestUrl += "/api/signatures/prepare-files-for-signing";
+    }
+    else if (commandName == ".uno:DownloadSignature")
+    {
+        requestUrl += "/api/signatures/download-signed-file";
+    }
+    std::shared_ptr<http::Session> httpSession = makeSignatureActionSession(client_from_this(), commandName, requestUrl);
+    if (!httpSession)
+    {
+        return false;
+    }
+
+    // Make the request: this requires a JSON body, where we set the secret
+    std::string commandArguments = tokens.cat(' ', 2);
+    Poco::JSON::Object::Ptr commandArgumentsObject;
+    if (!JsonUtil::parseJSON(commandArguments, commandArgumentsObject))
+    {
+        LOG_WRN("SignatureAction: failed to parse arguments as JSON");
+        return false;
+    }
+    Poco::JSON::Object::Ptr requestBodyObject = commandArgumentsObject->getObject("body");
+    if (!requestBodyObject)
+    {
+        LOG_WRN("SignatureAction: no body in arguments");
+        return false;
+    }
+    std::string secret;
+    JsonUtil::findJSONValue(serverPrivateInfoObject, "ESignatureSecret", secret);
+    requestBodyObject->set("secret", secret);
+    std::string requestBody;
+    std::stringstream oss;
+    requestBodyObject->stringify(oss);
+    requestBody = oss.str();
+    http::Request httpRequest(Poco::URI(requestUrl).getPathAndQuery());
+    httpRequest.setVerb(http::Request::VERB_POST);
+    httpRequest.setBody(requestBody, "application/json");
+    std::shared_ptr<DocumentBroker> docBroker = getDocumentBroker();
+    httpSession->asyncRequest(httpRequest, docBroker->getPoll());
+    return true;
+}
+#endif
 
 bool ClientSession::_handleInput(const char *buffer, int length)
 {
@@ -634,7 +726,8 @@ bool ClientSession::_handleInput(const char *buffer, int length)
 
         std::string timezoneName;
         if (COOLWSD::IndirectionServerEnabled && COOLWSD::GeolocationSetup)
-            timezoneName = config::getString("indirection_endpoint.geolocation_setup.timezone", "");
+            timezoneName =
+                ConfigUtil::getString("indirection_endpoint.geolocation_setup.timezone", "");
 
         // Send COOL version information
         sendTextFrame("coolserver " + Util::getVersionJSON(EnableExperimental, timezoneName));
@@ -649,7 +742,8 @@ bool ClientSession::_handleInput(const char *buffer, int length)
         if constexpr (!Util::isMobileApp())
         {
             // If it is not mobile, it must be Linux (for now).
-            std::string osVersionInfo(COOLWSD::getConfigValue<std::string>("per_view.custom_os_info", ""));
+            std::string osVersionInfo(
+                ConfigUtil::getConfigValue<std::string>("per_view.custom_os_info", ""));
             if (osVersionInfo.empty())
                 osVersionInfo = Util::getLinuxVersion();
 
@@ -918,9 +1012,9 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     {
         if (!_isTextDocument)
         {
-            int nPosition;
+            int position;
             if (tokens.size() != 2 ||
-                !getTokenInteger(tokens[1], "position", nPosition))
+                !getTokenInteger(tokens[1], "position", position))
             {
                 sendTextFrameAndLogError("error: cmd=moveselectedclientparts kind=syntax");
                 return false;
@@ -936,7 +1030,7 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     else if (tokens.equals(0, "clientzoom"))
     {
         int tilePixelWidth, tilePixelHeight, tileTwipWidth, tileTwipHeight;
-        if (tokens.size() != 5 ||
+        if (tokens.size() < 5 ||
             !getTokenInteger(tokens[1], "tilepixelwidth", tilePixelWidth) ||
             !getTokenInteger(tokens[2], "tilepixelheight", tilePixelHeight) ||
             !getTokenInteger(tokens[3], "tiletwipwidth", tileTwipWidth) ||
@@ -987,7 +1081,6 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     {
         if (tokens.size() > 1 && (isDocumentOwner() || !isReadOnly()))
         {
-            std::string sessionId = Util::encodeId(std::stoi(tokens[1]), 4);
             docBroker->broadcastMessage(firstLine);
             docBroker->removeSession(client_from_this());
         }
@@ -1115,7 +1208,7 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     }
     else if (tokens.equals(0, "traceeventrecording"))
     {
-        if (COOLWSD::getConfigValue<bool>("trace_event[@enable]", false))
+        if (ConfigUtil::getConfigValue<bool>("trace_event[@enable]", false))
         {
             if (tokens.size() > 0)
             {
@@ -1136,7 +1229,7 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     }
     else if (tokens.equals(0, "a11ystate"))
     {
-        if (COOLWSD::getConfigValue<bool>("accessibility.enable", false))
+        if (ConfigUtil::getConfigValue<bool>("accessibility.enable", false))
         {
             return forwardToChild(std::string(buffer, length), docBroker);
         }
@@ -1206,6 +1299,16 @@ bool ClientSession::_handleInput(const char *buffer, int length)
              tokens.equals(0, "geta11ycaretposition") ||
              tokens.equals(0, "getpresentationinfo"))
     {
+#if !MOBILEAPP
+        if (tokens.equals(0, "uno"))
+        {
+            if (tokens.equals(1, ".uno:PrepareSignature") || tokens.equals(1, ".uno:DownloadSignature"))
+            {
+                return handleSignatureAction(tokens);
+            }
+        }
+#endif
+
         if (tokens.equals(0, "key"))
             _keyEvents++;
 
@@ -1311,6 +1414,13 @@ bool ClientSession::loadDocument(const char* /*buffer*/, int /*length*/,
             oss << " authorprivateinfo=" << encodedUserPrivateInfo;
         }
 
+        if (!getServerPrivateInfo().empty())
+        {
+            std::string encodedServerPrivateInfo;
+            Poco::URI::encode(getServerPrivateInfo(), "", encodedServerPrivateInfo);
+            oss << " serverprivateinfo=" << encodedServerPrivateInfo;
+        }
+
         oss << " readonly=" << isReadOnly();
 
         if (isAllowChangeComments())
@@ -1363,21 +1473,23 @@ bool ClientSession::loadDocument(const char* /*buffer*/, int /*length*/,
             std::string encodedWatermarkText;
             Poco::URI::encode(getWatermarkText(), "", encodedWatermarkText);
             oss << " watermarkText=" << encodedWatermarkText;
-            oss << " watermarkOpacity=" << COOLWSD::getConfigValue<double>("watermark.opacity", 0.2);
+            oss << " watermarkOpacity="
+                << ConfigUtil::getConfigValue<double>("watermark.opacity", 0.2);
         }
 
-        if (COOLWSD::hasProperty("security.enable_macros_execution"))
+        if (ConfigUtil::hasProperty("security.enable_macros_execution"))
         {
             oss << " enableMacrosExecution=" << std::boolalpha
-                << COOLWSD::getConfigValue<bool>("security.enable_macros_execution", false);
+                << ConfigUtil::getConfigValue<bool>("security.enable_macros_execution", false);
         }
 
-        if (COOLWSD::hasProperty("security.macro_security_level"))
+        if (ConfigUtil::hasProperty("security.macro_security_level"))
         {
-            oss << " macroSecurityLevel=" << COOLWSD::getConfigValue<int>("security.macro_security_level", 1);
+            oss << " macroSecurityLevel="
+                << ConfigUtil::getConfigValue<int>("security.macro_security_level", 1);
         }
 
-        if (COOLWSD::getConfigValue<bool>("accessibility.enable", false))
+        if (ConfigUtil::getConfigValue<bool>("accessibility.enable", false))
         {
             oss << " accessibilityState=" << std::boolalpha << getAccessibilityState();
         }
@@ -1777,8 +1889,8 @@ bool ClientSession::handlePresentationInfo(const std::shared_ptr<Message>& paylo
 
                             if (!id.empty() && !url.empty())
                             {
-                                std::string aOriginal = "{ \"id\" : \"" + id + "\", \"url\" : \"" + url + "\" }";
-                                docBroker->addEmbeddedMedia(id, aOriginal); // Capture the original message with internal URL.
+                                std::string original = "{ \"id\" : \"" + id + "\", \"url\" : \"" + url + "\" }";
+                                docBroker->addEmbeddedMedia(id, original); // Capture the original message with internal URL.
 
                                 const std::string mediaUrl =
                                     Uri::encode(createPublicURI("media", id, false), "&");
@@ -2123,26 +2235,24 @@ bool ClientSession::handleKitToClientMessage(const std::shared_ptr<Message>& pay
             if (!socket)
                 continue;
 
-            std::ostringstream oss;
             // The custom header for the clipboard of a living document.
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Last-Modified: " << Util::getHttpTimeNow() << "\r\n"
-                << "User-Agent: " << http::getAgentString() << "\r\n"
-                << "Content-Length: " << (empty ? 0 : (payload->size() - header)) << "\r\n"
-                << "Content-Type: application/octet-stream\r\n"
-                << "X-Content-Type-Options: nosniff\r\n"
-                << "X-COOL-Clipboard: true\r\n"
-                << "Connection: close\r\n"
-                << "\r\n";
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Last-Modified", Util::getHttpTimeNow());
+            httpResponse.set("Content-Length",
+                             std::to_string(empty ? 0 : (payload->size() - header)));
+            httpResponse.add("Content-Type", "application/octet-stream");
+            httpResponse.add("X-Content-Type-Options", "nosniff");
+            httpResponse.add("X-COOL-Clipboard", "true");
+            httpResponse.set("Connection", "close");
+            socket->send(httpResponse);
 
             if (!empty)
             {
-                oss.write(&payload->data()[header], payload->size() - header);
                 socket->setSocketBufferSize(
                     std::min(payload->size() + 256, std::size_t(Socket::MaximumSendBufferSize)));
+                socket->send(&payload->data()[header], payload->size() - header);
             }
 
-            socket->send(oss.str());
             socket->shutdown();
             LOG_INF("Queued " << (empty?"empty":"clipboard") << " response for send.");
         }

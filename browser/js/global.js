@@ -259,6 +259,7 @@ class InitializerBase {
 		window.wasmEnabled = false;
 		window.indirectionUrl = "";
 		window.geolocationSetup = false;
+		window.canvasSlideshowEnabled = false;
 
 		window.tileSize = 256;
 
@@ -391,6 +392,7 @@ class BrowserInitializer extends InitializerBase {
 		window.wasmEnabled = element.dataset.wasmEnabled.toLowerCase().trim() === "true";
 		window.indirectionUrl = element.dataset.indirectionUrl;
 		window.geolocationSetup = element.dataset.geolocationSetup.toLowerCase().trim() === "true";
+		window.canvasSlideshowEnabled = element.dataset.canvasSlideshowEnabled.toLowerCase().trim() === "true";
 	}
 
 	postMessageHandler(e) {
@@ -872,6 +874,10 @@ function getInitializerClass() {
 				return !e.isMouseEvent;
 			}
 
+			if (e.guessEmulatedFromTouch) {
+				return true;
+			}
+
 			return !(e instanceof MouseEvent);
 		},
 
@@ -904,7 +910,53 @@ function getInitializerClass() {
 			return global.matchMedia('(any-pointer: coarse)').matches;
 		},
 
+		/// a tristate (boolean | null) determining whether the last event was a touch event
+		/// may be useful to supplement hasAnyTouchscreen or hasPrimaryTouchscreen for, for example, determining UI or
+		///   hitboxes after a tap in a place where you can't sensibly figure out whether the direct trigger was a
+		///   touchscreen. Examples might be click events that are roundtripped through core
+		/// is null when no touch or click events have yet occured, true when the last touch or click event was from a
+		///   touchscreen, and false when the last touch or click event was from a mouse
+		/// is updated with active listeners during the capture phase of the <html> element, so should be done before
+		///   most other event processing takes place
+		lastEventWasTouch: null,
+
+		/// a timestamp to indicate when lastEventWasTouch was last set
+		/// internally used to determine if hover (mouseover/out/enter/leave) events are likely from a mouse or from a
+		/// touch event
+		lastEventTime: null,
+
+		/// detect if the last event was a touch event, or if no events have yet occured whether we have a touchscreen
+		///   available to us. Should be able to replace uses of hasAnyTouchscreen for uses where we are OK with the
+		///   result being less stable
+		currentlyUsingTouchscreen: function() {
+			if (global.touch.lastEventWasTouch !== null) {
+				return global.touch.lastEventWasTouch;
+			}
+
+			return global.touch.hasAnyTouchscreen();
+		},
 	};
+
+	const registerTapOrClick = (e) => {
+		global.touch.lastEventWasTouch = global.touch.isTouchEvent(e);
+		global.touch.lastEventTime = Date.now();
+	};
+	const registerGuessEmulatedFromTouch = (e) => {
+		// on some touchscreens (e.g. iPads) these MouseEvents are emulated for the movement caused by touch events,
+		// leading to tooltips erroneously triggering ... these are all movement events so don't necessarily need a click,
+		// but for touch events they will happen around other touch events so we can still tell what they are
+		e.guessEmulatedFromTouch = global.touch.lastEventWasTouch && Date.now() - global.touch.lastEventTime < 50;
+	};
+	document.addEventListener('touchstart', registerTapOrClick, { capture: true });
+	document.addEventListener('touchend', registerTapOrClick, { capture: true });
+	document.addEventListener('mousedown', registerTapOrClick, { capture: true });
+	document.addEventListener('mouseup', registerTapOrClick, { capture: true });
+	document.addEventListener('pointerdown', registerTapOrClick, { capture: true });
+	document.addEventListener('pointerup', registerTapOrClick, { capture: true });
+	document.addEventListener('mouseenter', registerGuessEmulatedFromTouch, { capture: true });
+	document.addEventListener('mouseleave', registerGuessEmulatedFromTouch, { capture: true });
+	document.addEventListener('mouseover', registerGuessEmulatedFromTouch, { capture: true });
+	document.addEventListener('mouseout', registerGuessEmulatedFromTouch, { capture: true });
 
 	if (!global.prefs.getBoolean('clipboardApiAvailable', true)) {
 		// navigator.clipboard.write failed on us once, don't even try it.

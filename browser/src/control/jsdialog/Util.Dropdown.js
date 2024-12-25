@@ -28,6 +28,7 @@ JSDialog.OpenDropdown = function (id, popupParent, entries, innerCallback, popup
 		jsontype: 'dialog',
 		popupParent: popupParent,
 		popupAnchor: popupAnchor,
+		gridKeyboardNavigation: false,
 		cancellable: true,
 		children: [
 			{
@@ -64,10 +65,13 @@ JSDialog.OpenDropdown = function (id, popupParent, entries, innerCallback, popup
 					htmlId: entries[i].htmlId,
 					closeCallback: function () { JSDialog.CloseDropdown(id); }
 				};
+				json.gridKeyboardNavigation = true;
 			break;
 
 			case 'colorpicker':
 				entry = entries[i];
+				// for color picker we have a "KeyboardGridNavigation" function defined separately to handle custom cases
+				json.gridKeyboardNavigation = true;
 			break;
 
 			case 'action':
@@ -149,7 +153,6 @@ JSDialog.OpenDropdown = function (id, popupParent, entries, innerCallback, popup
 				JSDialog.CloseDropdown(id);
 		};
 	};
-
 	L.Map.THIS.fire('jsdialog', {data: json, callback: generateCallback(entries)});
 };
 

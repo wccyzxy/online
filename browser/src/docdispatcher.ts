@@ -119,6 +119,31 @@ class Dispatcher {
 		this.actionsMap['insertmultimedia'] = function () {
 			L.DomUtil.get('insertmultimedia').click();
 		};
+		this.actionsMap['remotemultimedia'] = function () {
+			app.map.fire('postMessage', {
+				msgId: 'UI_InsertFile',
+				args: {
+					callback: 'Action_InsertMultimedia',
+					mimeTypeFilter: [
+						'video/MP2T',
+						'video/mp4',
+						'video/mpeg',
+						'video/ogg',
+						'video/quicktime',
+						'video/webm',
+						'video/x-matroska',
+						'video/x-ms-wmv',
+						'video/x-msvideo',
+						'audio/aac',
+						'audio/flac',
+						'audio/mp4',
+						'audio/mpeg',
+						'audio/ogg',
+						'audio/x-wav',
+					],
+				},
+			});
+		};
 
 		this.actionsMap['charmapcontrol'] = function () {
 			app.map.sendUnoCommand('.uno:InsertSymbol');
@@ -418,15 +443,14 @@ class Dispatcher {
 		this.actionsMap['presentation'] = this.actionsMap[
 			'fullscreen-presentation'
 		] = () => {
-			if (app.map._debug.debugOn || app.isExperimentalMode())
-				app.map.fire('newfullscreen');
+			if ((window as any).canvasSlideshowEnabled) app.map.fire('newfullscreen');
 			else app.map.fire('fullscreen');
 		};
 
 		this.actionsMap['presentation-currentslide'] = this.actionsMap[
 			'presentation-currentslide'
 		] = () => {
-			if (app.map._debug.debugOn || app.isExperimentalMode())
+			if ((window as any).canvasSlideshowEnabled)
 				app.map.fire('newfullscreen', {
 					startSlideNumber: app.map.getCurrentPartNumber(),
 				});
@@ -438,13 +462,13 @@ class Dispatcher {
 
 		this.actionsMap['presentinwindow'] = this.actionsMap['present-in-window'] =
 			() => {
-				if (app.map._debug.debugOn || app.isExperimentalMode())
+				if ((window as any).canvasSlideshowEnabled)
 					app.map.fire('newpresentinwindow');
 				else app.map.fire('presentinwindow');
 			};
 
 		this.actionsMap['presenterconsole'] = () => {
-			if (app.map._debug.debugOn || app.isExperimentalMode())
+			if ((window as any).canvasSlideshowEnabled)
 				app.map.fire('newpresentinconsole');
 		};
 
@@ -581,6 +605,13 @@ class Dispatcher {
 			app.map.showResolvedComments(!val);
 		};
 
+		this.actionsMap['showannotations'] = function () {
+			const items = app.map['stateChangeHandler'];
+			let val = items.getItemValue('showannotations');
+			val = val === 'true' || val === true;
+			app.map.showComments(!val);
+		};
+
 		this.actionsMap['.uno:AcceptAllTrackedChanges'] = function () {
 			app.map.sendUnoCommand('.uno:AcceptAllTrackedChanges');
 			app.socket.sendMessage('commandvalues command=.uno:ViewAnnotations');
@@ -674,18 +705,19 @@ class Dispatcher {
 		// }
 	}
 
-	constructor() {
+	/// optional docType specifies which commands should we load
+	constructor(docType: string = undefined) {
+		docType = docType ? docType : app.map._docLayer._docType;
+
 		this.addGeneralCommands();
 		this.addExportCommands();
 
-		if (app.map._docLayer._docType === 'text') {
+		if (docType === 'text') {
 			this.addWriterCommands();
 			this.addZoteroCommands();
-		} else if (app.map._docLayer._docType === 'spreadsheet') {
+		} else if (docType === 'spreadsheet') {
 			this.addCalcCommands();
-		} else if (
-			['presentation', 'drawing'].includes(app.map._docLayer._docType)
-		) {
+		} else if (['presentation', 'drawing'].includes(docType)) {
 			this.addImpressAndDrawCommands();
 		}
 
@@ -730,6 +762,7 @@ class Dispatcher {
 			action === '.uno:PasteSpecial'
 		) {
 			app.map._clip.filterExecCopyPaste(action);
+			return;
 		}
 
 		if (this.actionsMap[action] !== undefined) {

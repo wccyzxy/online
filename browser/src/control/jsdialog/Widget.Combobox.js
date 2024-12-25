@@ -237,9 +237,19 @@ JSDialog.combobox = function (parentContainer, data, builder) {
 
 		resetSelection();
 		for (var i in entries) {
-			if (entries[i] == this.value) {
+			if (entries[i] == this.value || entries[i].text == this.value) {
 				entries[i].selected = true;
 				break;
+			}
+		}
+		// check for drop down is in open state or not.
+		// If open then we should make focus in entries field for Arrow key navigation
+		if (event.key === 'ArrowDown' && builder.map.jsdialog.hasDropdownOpened()) {
+			const comboboxEntries =  JSDialog.GetDropdown(data.id);
+			const selectedElement = comboboxEntries.querySelector(".selected");
+			if (selectedElement) {
+				selectedElement.focus();
+				return;
 			}
 		}
 	});
@@ -299,6 +309,8 @@ JSDialog.combobox = function (parentContainer, data, builder) {
 	};
 
 	container.onSetText = function (text) {
+		if (document.activeElement === content)
+			return;
 		content.value = text;
 	};
 

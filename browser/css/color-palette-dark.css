@@ -11,10 +11,12 @@
 	--color-text-darker: #c0bfbc;  /* hover */
 	--color-text-lighter: #fff; /* secondard text, disabled */
 	--color-status-badge: #d6d6d6;
+	--color-slideshow: #d6d6d6;
 
 	--color-main-background: #121212;
 	--color-background-dark: #1E1E1E;  /* select */
 	--color-background-darker: #000;  /* todo: apply to pressed (active), li:hover(top menu on classic mode)*/
+	--color-background-slideshow: #171717;
 	--color-background-lighter: #262626; /* hover, toolbar, dialog, disabled */
 	--color-overlay: #1c5fa814;
 	--color-background-tabs-group: #303030;
@@ -47,6 +49,17 @@
 
 	--color-box-shadow: rgba(0, 0, 0, 0.5);
 	--color-hyperlink: #1d99f3;
+
+	--color-calc-grid: #474747;
+	--color-calc-header: #0a0a0a;
+	--color-calc-header-selected: #646464;
+	--color-text-calc-header-selected: #fff;
+	--color-border-calc-header: var(--color-border-dark);
+	--color-calc-header-hover: #646464;
+
+	--color-grid-helper-line-solid: #e6e6e6;
+	--color-grid-helper-line-dashed: #191919;
+	--color-smart-guides-helper-line: #f36d4f;
 }
 
 [data-bg-theme='dark'] {

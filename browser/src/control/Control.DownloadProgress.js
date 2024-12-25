@@ -11,7 +11,7 @@
 /*
  * L.Control.DownloadProgress.
  */
-/* global _ $ JSDialog */
+/* global _ $ JSDialog app */
 L.Control.DownloadProgress = L.Control.extend({
 	options: {
 		snackbarTimeout: 20000,
@@ -111,12 +111,14 @@ L.Control.DownloadProgress = L.Control.extend({
 		var buttonText = _('Copy') + L.Util.replaceCtrlAltInMac(' (Ctrl + C)');
 
 		if (inSnackbar) {
-			this._map.uiManager.showProgressBar(snackbarMsg, buttonText,
-				this._onConfirmCopyAction.bind(this), this.options.snackbarTimeout);
-
 			this._map.uiManager.setSnackbarProgress(100);
 
-			this.setupKeyboardShortcutForSnackbar();
+			this._map.uiManager.showSnackbar(
+				snackbarMsg, buttonText, this._onConfirmCopyAction.bind(this), this.options.snackbarTimeout);
+
+			setTimeout(() => {
+				this.setupKeyboardShortcutForSnackbar();
+			}, 100);
 		} else {
 			JSDialog.setMessageInModal(modalId, dialogMsg, '');
 			JSDialog.enableButtonInModal(modalId, modalId + '-response', true);
@@ -150,7 +152,11 @@ L.Control.DownloadProgress = L.Control.extend({
 	},
 
 	setupKeyboardShortcutForSnackbar: function () {
-		this._setupKeyboardShortcutForElement('snackbar', 'button');
+		this._setupKeyboardShortcutForElement('snackbar-container', 'button');
+
+		// Snackbars cannot get focus, but we are using it with a button and it requires to be focused. No need to change snackbar imp for now.
+		if (document.getElementById('button'))
+			document.getElementById('button').focus(); // TODO: This "button" id is too generic. It could be something like "snackbar-button" etc.
 	},
 
 	// isLargeCopy specifies if we are copying and have to explain user the process
@@ -282,30 +288,30 @@ L.Control.DownloadProgress = L.Control.extend({
 			this._map.focus();
 	},
 
-	_download: function () {
-		var that = this;
-		this._map._clip._doAsyncDownload(
-			'GET', that._uri, null, true,
-			function(response) {
-				window.app.console.log('clipboard async download done');
-				// annoying async parse of the blob ...
-				var reader = new FileReader();
-				reader.onload = function() {
-					var text = reader.result;
-					window.app.console.log('async clipboard parse done: ' + text.substring(0, 256));
-					let result = that._map._clip.parseClipboard(text);
-					that._map._clip.setTextSelectionHTML(result['html'], result['plain']);
-				};
-				// TODO: failure to parse ? ...
-				reader.readAsText(response);
-			},
-			function(progress) { return progress/2; },
-			function () {
-				that._onClose();
-				that._map.uiManager.showSnackbar(
-					_('Download failed'), '', null,this.options.snackbarTimeout);
-			}
-		);
+	_download: async function () {
+		let response;
+		try {
+			response = await this._map._clip._doAsyncDownload(
+				'GET', this._uri, null, true,
+				function(progress) { return progress/2; },
+			);
+		} catch (error) {
+			this._onClose();
+			app.showAsyncDownloadError(error, _('Download failed'));
+			return;
+		}
+
+		window.app.console.log('clipboard async download done');
+		// annoying async parse of the blob ...
+		var reader = new FileReader();
+		reader.onload = () => {
+			var text = reader.result;
+			window.app.console.log('async clipboard parse done: ' + text.substring(0, 256));
+			let result = this._map._clip.parseClipboard(text);
+			this._map._clip.setTextSelectionHTML(result['html'], result['plain']);
+		};
+		// TODO: failure to parse ? ...
+		reader.readAsText(response);
 	},
 
 	_cancelDownload: function () {

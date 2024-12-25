@@ -64,7 +64,7 @@ std::string HostEntry::makeIPAddress(const sockaddr* ai_addr)
     const char* result = inet_ntop(ai_addr->sa_family, inAddr, addrstr, sizeof(addrstr));
     if (!result)
     {
-        _errno = errno;
+        _saved_errno = errno;
         LOG_WRN("inet_ntop failure: " << errorMessage());
         return std::string();
     }
@@ -76,7 +76,7 @@ void HostEntry::setEAI(int eaino)
     _eaino = eaino;
     // EAI_SYSTEM: Other system error; errno is set to indicate the error.
     if (_eaino == EAI_SYSTEM)
-        _errno = errno;
+        _saved_errno = errno;
 }
 
 std::string HostEntry::errorMessage() const
@@ -85,13 +85,13 @@ std::string HostEntry::errorMessage() const
     if (_eaino && _eaino != EAI_SYSTEM)
         errmsg = gai_strerror(_eaino);
     else
-        errmsg = strerror(_errno);
+        errmsg = strerror(_saved_errno);
     return std::string("[" + _requestName + "]: " + errmsg);
 }
 
 HostEntry::HostEntry(const std::string& desc, const char* port)
     : _requestName(desc)
-    , _errno(0)
+    , _saved_errno(0)
     , _eaino(0)
 {
     addrinfo hints;
@@ -218,18 +218,27 @@ bool HostEntry::isLocalhost() const
 {
     const std::string targetAddress = resolveHostAddress();
 
-    const Poco::Net::NetworkInterface::NetworkInterfaceList list =
-        Poco::Net::NetworkInterface::list(true, true);
-    for (const auto& netif : list)
+    try
     {
-        std::string address = netif.address().toString();
-        address = address.substr(0, address.find('%', 0));
-        if (address == targetAddress)
+        const Poco::Net::NetworkInterface::NetworkInterfaceList list =
+            Poco::Net::NetworkInterface::list(true, true);
+        for (const auto& netif : list)
         {
-            LOG_TRC("Host [" << _requestName << "] is on the same host as the client: \""
-                             << targetAddress << "\".");
-            return true;
+            std::string address = netif.address().toString();
+            address = address.substr(0, address.find('%', 0));
+            if (address == targetAddress)
+            {
+                LOG_TRC("Host [" << _requestName << "] is on the same host as the client: \""
+                                 << targetAddress << "\".");
+                return true;
+            }
         }
+    }
+    catch (const Poco::Exception& exc)
+    {
+        // possibly getifaddrs failed
+        LOG_WRN("Poco::Net::NetworkInterface::list failed: " << exc.displayText() <<
+                " (" << Util::symbolicErrno(errno) << ' ' << strerror(errno) << ")");
     }
 
     LOG_TRC("Host [" << _requestName << "] is not on the same host as the client: \"" << targetAddress
@@ -290,6 +299,7 @@ AsyncDNS::~AsyncDNS()
 
 void AsyncDNS::resolveDNS()
 {
+    Util::setThreadName("asyncdns");
     std::unique_lock<std::mutex> guard(_lock);
     while (true)
     {
@@ -369,7 +379,7 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
     if (host.empty() || port.empty())
     {
         LOG_ERR("Invalid host/port " << host << ':' << port);
-        asyncCb(nullptr);
+        asyncCb(nullptr, AsyncConnectResult::HostNameError);
         return;
     }
 
@@ -379,7 +389,7 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
     if (isSSL)
     {
         LOG_ERR("Error: isSSL socket requested but SSL is not compiled in.");
-        asyncCb(nullptr);
+        asyncCb(nullptr, AsyncConnectResult::MissingSSLError);
         return;
     }
 #endif
@@ -388,6 +398,8 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
                                            asyncCb](const HostEntry& hostEntry)
     {
         std::shared_ptr<StreamSocket> socket;
+
+        AsyncConnectResult result = AsyncConnectResult::UnknownHostError;
 
         if (const addrinfo* ainfo = hostEntry.getAddrInfo())
         {
@@ -398,6 +410,7 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
                     int fd = ::socket(ai->ai_addr->sa_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
                     if (fd < 0)
                     {
+                        result = AsyncConnectResult::SocketError;
                         LOG_SYS("Failed to create socket");
                         continue;
                     }
@@ -405,6 +418,7 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
                     int res = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
                     if (res < 0 && errno != EINPROGRESS)
                     {
+                        result = AsyncConnectResult::ConnectionError;
                         LOG_SYS("Failed to connect to " << host);
                         ::close(fd);
                     }
@@ -429,8 +443,11 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
                         {
                             LOG_DBG('#' << fd << " New socket connected to " << host << ':' << port
                                         << " (" << (isSSL ? "SSL)" : "Unencrypted)"));
+                            result = AsyncConnectResult::Ok;
                             break;
                         }
+
+                        result = AsyncConnectResult::SocketError;
 
                         LOG_ERR("Failed to allocate socket for client websocket " << host);
                         ::close(fd);
@@ -442,7 +459,7 @@ asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
         else
             LOG_SYS("Failed to lookup host [" << host << "]. Skipping");
 
-        asyncCb(std::move(socket));
+        asyncCb(std::move(socket), result);
     };
 
     net::AsyncDNS::DNSThreadDumpStateFn dumpState = [host, port]() -> std::string
@@ -560,7 +577,7 @@ connect(std::string uri, const std::shared_ptr<ProtocolHandlerInterface>& protoc
 }
 
 bool parseUri(std::string uri, std::string& scheme, std::string& host, std::string& port,
-              std::string& url)
+              std::string& pathAndQuery)
 {
     const auto itScheme = uri.find("://");
     if (itScheme != uri.npos)
@@ -577,12 +594,12 @@ bool parseUri(std::string uri, std::string& scheme, std::string& host, std::stri
     const auto itUrl = uri.find('/');
     if (itUrl != uri.npos)
     {
-        url = uri.substr(itUrl); // Including the first foreslash.
+        pathAndQuery = uri.substr(itUrl); // Including the first foreslash.
         uri = uri.substr(0, itUrl);
     }
     else
     {
-        url.clear();
+        pathAndQuery.clear();
     }
 
     const auto itPort = uri.find(':');

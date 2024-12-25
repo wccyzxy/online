@@ -11,11 +11,11 @@
 
 #pragma once
 
+#include "testlog.hpp"
+
+#include <cassert>
 #include <vector>
 #include <ostream>
-
-#include "testlog.hpp"
-#include <assert.h>
 
 #include <cppunit/TestAssert.h>
 
@@ -206,7 +206,7 @@ inline constexpr bool failed() { return false; }
 #define LOK_ASSERT_FAIL(message)                                                                   \
     do                                                                                             \
     {                                                                                              \
-        TST_LOG("ERROR: Forced failure: " << (message));                                           \
+        TST_LOG("ERROR: Forced failure: " << message);                                             \
         LOK_ASSERT_IMPL(!"Forced failure: " #message); /* NOLINT(misc-static-assert) */            \
         CPPUNIT_FAIL((message));                                                                   \
     } while (false)

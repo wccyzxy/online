@@ -11,15 +11,16 @@
 
 #pragma once
 
+#include <common/Authorization.hpp>
+#include <common/ConfigUtil.hpp>
+#include <net/HttpRequest.hpp>
+
 #include <chrono>
 #include <memory>
 #include <string>
 
 #include <Poco/URI.h>
 #include <Poco/Util/Application.h>
-
-#include "Authorization.hpp"
-#include "HttpRequest.hpp"
 
 /// A Storage Manager is responsible for the settings
 /// of Storage and the creation of http::Session and
@@ -30,14 +31,14 @@ public:
     static std::shared_ptr<StorageConnectionManager> create()
     {
         static std::weak_ptr<StorageConnectionManager> instance;
-        std::shared_ptr<StorageConnectionManager> sm = instance.lock();
-        if (!sm)
+        std::shared_ptr<StorageConnectionManager> scm = instance.lock();
+        if (!scm)
         {
-            sm = std::shared_ptr<StorageConnectionManager>(new StorageConnectionManager());
-            instance = sm;
+            scm = std::shared_ptr<StorageConnectionManager>(new StorageConnectionManager());
+            instance = scm;
         }
 
-        return sm;
+        return scm;
     }
 
     /// Create an http::Session from a URI.
@@ -52,10 +53,10 @@ public:
     static void initialize();
 
 private:
-    StorageConnectionManager() {}
+    StorageConnectionManager() = default;
 
     /// Sanitize a URI by removing authorization tokens.
-    Poco::URI sanitizeUri(Poco::URI uri)
+    static Poco::URI sanitizeUri(Poco::URI uri)
     {
         static const std::string access_token("access_token");
 

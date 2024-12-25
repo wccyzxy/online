@@ -95,6 +95,7 @@ L.Control.Menubar = L.Control.extend({
 					{name: _('EPUB (.epub)'), id: !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub', type: 'action'},
 					{name: _('HTML file (.html)'), id: 'downloadas-html', type: 'action'}]},
 				{name: _UNO('.uno:SetDocumentProperties', 'text'), uno: '.uno:SetDocumentProperties', id: 'properties'},
+				{name: _UNO('.uno:Signature', 'text'), uno: '.uno:Signature', id: 'signature'},
 				{type: 'separator'},
 				{name: L.Control.MenubarShortcuts.addShortcut(_UNO('.uno:Print', 'text'), L.Control.MenubarShortcuts.shortcuts.PRINT), id: 'print', type: 'action'},
 				{name: _('Close document'), id: 'closedocument', type: 'action'}
@@ -148,6 +149,7 @@ L.Control.Menubar = L.Control.extend({
 					{uno: '.uno:SidebarDeck.PropertyDeck', name: _UNO('.uno:Sidebar')},
 					{uno: '.uno:Navigator', id: 'navigator'},
 					{type: 'separator'},
+					{name: _UNO('.uno:ShowAnnotations', 'text'), id: 'showannotations', type: 'action'},
 					{name: _UNO('.uno:ShowResolvedAnnotations', 'text'), id: 'showresolved', type: 'action'},
 					{uno: '.uno:ControlCodes'},
 				])},
@@ -277,6 +279,7 @@ L.Control.Menubar = L.Control.extend({
 				{type: 'separator'},
 				{uno: '.uno:FontDialog'},
 				{uno: '.uno:ParagraphDialog'},
+				{uno: '.uno:SidebarDeck.StyleListDeck'},
 				{uno: '.uno:OutlineBullet'},
 				{uno: '.uno:ThemeDialog'},
 				{type: 'separator'},
@@ -417,6 +420,7 @@ L.Control.Menubar = L.Control.extend({
 					{name: _('Current slide as Tag Image File Format (.tiff)'), id: 'downloadas-tiff', type: 'action'},
 				]},
 				{name: _UNO('.uno:SetDocumentProperties', 'presentation'), uno: '.uno:SetDocumentProperties', id: 'properties'},
+				{name: _UNO('.uno:Signature', 'presentation'), uno: '.uno:Signature', id: 'signature'},
 				{type: 'separator'},
 				{name: L.Control.MenubarShortcuts.addShortcut(_UNO('.uno:Print', 'presentation'), L.Control.MenubarShortcuts.shortcuts.PRINT), id: 'print', type: 'menu', menu: [
 					{name: _('Full Page Slides'), id: 'print', type: 'action'},
@@ -538,7 +542,8 @@ L.Control.Menubar = L.Control.extend({
 				{type: 'separator', id: 'fullscreen-presentation-separator'},
 				{name: _('Fullscreen presentation'), id: 'fullscreen-presentation', type: 'action'},
 				{name: _('Present current slide'), id: 'presentation-currentslide', type: 'action'},
-				{name: _('Present in new window'), id: 'present-in-window', type: 'action'}]
+				{name: _('Present in new window'), id: 'present-in-window', type: 'action'},
+				{name: _('Presenter Console'), id: 'presentation-in-console', type: 'action'}]
 			},
 			{name: _UNO('.uno:ToolsMenu', 'presentation'), id: 'tools', type: 'menu', menu: [
 				{uno: '.uno:SpellDialog'},
@@ -578,6 +583,7 @@ L.Control.Menubar = L.Control.extend({
 					{name: _('ODF Drawing (.odg)'), id: 'downloadas-odg', type: 'action'}
 				]},
 				{name: _UNO('.uno:SetDocumentProperties', 'presentation'), uno: '.uno:SetDocumentProperties', id: 'properties'},
+				{name: _UNO('.uno:Signature', 'presentation'), uno: '.uno:Signature', id: 'signature'},
 				{type: 'separator'},
 				{name: _('Close document'), id: 'closedocument', type: 'action'}
 			]},
@@ -638,6 +644,7 @@ L.Control.Menubar = L.Control.extend({
 					{name: _UNO('.uno:InsertPageTitleField', 'presentation'), uno: '.uno:InsertPageTitleField'},
 					{name: _UNO('.uno:InsertPagesField', 'presentation'), uno: '.uno:InsertPagesField'},
 				]},
+				{name: _('Electronic signature...'), id: 'insert-esignature', type: 'action'},
 			]},
 			{name: _UNO('.uno:FormatMenu', 'presentation'), id: 'format', type: 'menu', menu: [
 				{uno: '.uno:FontDialog'},
@@ -717,6 +724,7 @@ L.Control.Menubar = L.Control.extend({
 					{name: _('CSV file (.csv)'), id: 'downloadas-csv', type: 'action'},
 					{name: _('HTML file (.html)'), id: 'downloadas-html', type: 'action'}]},
 				{name: _UNO('.uno:SetDocumentProperties', 'spreadsheet'), uno: '.uno:SetDocumentProperties', id: 'properties'},
+				{name: _UNO('.uno:Signature', 'spreadsheet'), uno: '.uno:Signature', id: 'signature'},
 				{type: 'separator'},
 				{name: L.Control.MenubarShortcuts.addShortcut(_UNO('.uno:Print', 'spreadsheet'), L.Control.MenubarShortcuts.shortcuts.PRINT), id: 'print', type: 'menu', menu: [
 					{name: _('Active sheet'), id: 'print-active-sheet', type: 'action'},
@@ -857,7 +865,7 @@ L.Control.Menubar = L.Control.extend({
 						{name: _('Values duplicate...'), uno: '.uno:ConditionalFormatEasy?FormatRule:short=8'},
 						{name: _('Containing text...'), uno: '.uno:ConditionalFormatEasy?FormatRule:short=23'},
 						{type: 'separator'},
-						{name: _('More highlights...'), uno: '.uno:ConditionalFormatManagerDialog'},
+						{name: _('More highlights...'), uno: '.uno:ConditionalFormatDialog'},
 					]},
 					{name: _('Top/Bottom Rules...'), type: 'menu', menu: [
 						{name: _('Top N elements...'), uno: '.uno:ConditionalFormatEasy?FormatRule:short=11'},
@@ -867,7 +875,7 @@ L.Control.Menubar = L.Control.extend({
 						{name: _('Above Average...'), uno: '.uno:ConditionalFormatEasy?FormatRule:short=15'},
 						{name: _('Below Average...'), uno: '.uno:ConditionalFormatEasy?FormatRule:short=16'},
 						{type: 'separator'},
-						{name: _('More highlights...'), uno: '.uno:ConditionalFormatManagerDialog'},
+						{name: _('More highlights...'), uno: '.uno:ConditionalFormatDialog'},
 					]},
 					{uno: '.uno:ColorScaleFormatDialog'},
 					{uno: '.uno:DataBarFormatDialog'},
@@ -1359,6 +1367,11 @@ L.Control.Menubar = L.Control.extend({
 		// Only these menu options will be visible in readonly mode
 		allowedReadonlyMenus: ['file', 'downloadas', 'view', 'insert', 'slide', 'help'],
 
+		// Only these UNO commands will be enabled in readonly mode
+		allowedViewModeCommands: [
+			'.uno:Signature',
+		],
+
 		allowedViewModeActions: [
 			() => app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).hasAnyComments() ? 'savecomments' : undefined,
 			'shareas', 'print', // file menu
@@ -1366,7 +1379,8 @@ L.Control.Menubar = L.Control.extend({
 			'downloadas-odp', 'downloadas-ppt', 'downloadas-pptx', 'downloadas-odg', 'exportpdf' , // file menu
 			!window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-pdf', !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub', // file menu
 			'downloadas-ods', 'downloadas-xls', 'downloadas-xlsx', 'downloadas-csv', 'closedocument', // file menu
-			!(L.Browser.ie || L.Browser.edge) ? 'fullscreen' : undefined, 'zoomin', 'zoomout', 'zoomreset', 'showstatusbar', 'showresolved', 'toggledarktheme', // view menu
+			!(L.Browser.ie || L.Browser.edge) ? 'fullscreen' : undefined, 'zoomin', 'zoomout', 'zoomreset', 'showstatusbar', 'showresolved', 'showannotations', 'toggledarktheme', // view menu
+			() => app.map.eSignature ? 'insert-esignature' : undefined, // insert menu
 			'about', 'keyboard-shortcuts', 'latestupdates', 'feedback', 'serveraudit', 'online-help', 'report-an-issue', // help menu
 			'insertcomment'
 		]
@@ -1385,7 +1399,7 @@ L.Control.Menubar = L.Control.extend({
 		$('#main-menu-state').after(this._menubarCont);
 
 		if (!this._map['wopi'].DisablePresentation)
-			this.options.allowedViewModeActions = this.options.allowedViewModeActions.concat(['fullscreen-presentation', 'presentation-currentslide', 'present-in-window']);
+			this.options.allowedViewModeActions = this.options.allowedViewModeActions.concat(['fullscreen-presentation', 'presentation-currentslide', 'present-in-window','presentation-in-console']);
 
 		this._initializeMenu(this.options.initial);
 
@@ -1719,6 +1733,7 @@ L.Control.Menubar = L.Control.extend({
 			var aItem = this;
 			var type = $(aItem).data('type');
 			var id = $(aItem).data('id');
+			let uno = $(aItem).data('uno');
 			var constChecked = 'lo-menu-item-checked';
 			if (self._map.isEditMode()) {
 				if (type === 'unocommand') { // enable all depending on stored commandStates
@@ -1835,10 +1850,20 @@ L.Control.Menubar = L.Control.extend({
 						} else {
 							$(aItem).removeClass('disabled');
 						}
+					} else if (id === 'showannotations') {
+						var section = app.sectionContainer.getSectionWithName(L.CSections.CommentList.name);
+						if (section) {
+							itemState = self._map['stateChangeHandler'].getItemValue('showannotations');
+							if (itemState === 'true')
+								$(aItem).addClass(constChecked);
+							else
+								$(aItem).removeClass(constChecked);
+						}
 					} else if (id === 'showresolved') {
 						var section = app.sectionContainer.getSectionWithName(L.CSections.CommentList.name);
 						if (section) {
-							if (section.sectionProperties.commentList.length === 0) {
+							if (section.sectionProperties.commentList.length === 0 ||
+								!section.sectionProperties.show) {
 								$(aItem).addClass('disabled');
 							} else if (section.sectionProperties.showResolved) {
 								$(aItem).removeClass('disabled');
@@ -1870,8 +1895,12 @@ L.Control.Menubar = L.Control.extend({
 				}
 			} else { // eslint-disable-next-line no-lonely-if
 				if (type === 'unocommand') { // disable all uno commands
-					$(aItem).addClass('disabled');
-					aItem.title = _('Read-only mode');
+					// Except the ones listed in allowedViewModeCommands:
+					let allowed = self.options.allowedViewModeCommands.includes(uno);
+					if (!allowed) {
+						$(aItem).addClass('disabled');
+						aItem.title = _('Read-only mode');
+					}
 				} else if (type === 'action') { // disable all except allowedViewModeActions
 					var found = false;
 					for (var i in self.options.allowedViewModeActions) {
@@ -1971,16 +2000,44 @@ L.Control.Menubar = L.Control.extend({
 			app.dispatcher.dispatch(id);
 		} else if (id === 'insertcomment') {
 			this._map.insertComment();
+		} else if (id === 'insert-esignature') {
+			if (this._map.eSignature) {
+				this._map.eSignature.insert();
+			}
 		} else if (id === 'insertgraphic') {
 			L.DomUtil.get('insertgraphic').click();
 		} else if (id === 'insertgraphicremote') {
 			this._map.fire('postMessage', {msgId: 'UI_InsertGraphic'});
 		} else if (id === 'insertmultimedia') {
 			L.DomUtil.get('insertmultimedia').click();
+		} else if (id === 'remotemultimedia') {
+			this._map.fire('postMessage', {
+				msgId: 'UI_InsertFile', args: {
+					callback: 'Action_InsertMultimedia', mimeTypeFilter: [
+						'video/MP2T',
+						'video/mp4',
+						'video/mpeg',
+						'video/ogg',
+						'video/quicktime',
+						'video/webm',
+						'video/x-matroska',
+						'video/x-ms-wmv',
+						'video/x-msvideo',
+						'audio/aac',
+						'audio/flac',
+						'audio/mp4',
+						'audio/mpeg',
+						'audio/ogg',
+						'audio/x-wav',
+					]
+				}
+			});
 		} else if (id === 'selectbackground') {
 			app.dispatcher.dispatch('selectbackground');
 		} else if (id === 'zoomin' && this._map.getZoom() < this._map.getMaxZoom()) {
 			app.dispatcher.dispatch('zoomin');
+		} else if (id === 'showannotations') {
+			app.dispatcher.dispatch('showannotations');
 		} else if (id === 'showresolved') {
 			app.dispatcher.dispatch('.uno:ShowResolvedAnnotations');
 		} else if (id === 'zoomout' && this._map.getZoom() > this._map.getMinZoom()) {
@@ -2009,6 +2066,8 @@ L.Control.Menubar = L.Control.extend({
 			app.dispatcher.dispatch('presentation-currentslide');
 		} else if (id === 'present-in-window' && this._map.getDocType() === 'presentation') {
 			app.dispatcher.dispatch('present-in-window');
+		} else if (id === 'presentation-in-console') {
+			app.dispatcher.dispatch('presenterconsole');
 		} else if (id === 'insertpage') {
 			this._map.insertPage();
 		} else if (id === 'insertshape') {
@@ -2110,23 +2169,10 @@ L.Control.Menubar = L.Control.extend({
 	},
 
 	_createFileIcon: function() {
-		var iconClass = 'document-logo';
-		var docType = this._map.getDocType();
-		if (docType === 'text') {
-			iconClass += ' writer-icon-img';
-		} else if (docType === 'spreadsheet') {
-			iconClass += ' calc-icon-img';
-		} else if (docType === 'presentation') {
-			iconClass += ' impress-icon-img';
-		} else if (docType === 'drawing') {
-			iconClass += ' draw-icon-img';
-		}
-		$('.main-nav').addClass(docType + '-color-indicator');
-
 		var liItem = L.DomUtil.create('li', '');
 		liItem.id = 'document-header';
 		liItem.setAttribute('role', 'menuitem');
-		var aItem = L.DomUtil.create('div', iconClass, liItem);
+		var aItem = L.DomUtil.create('div', 'document-logo', liItem);
 		$(aItem).data('id', 'document-logo');
 		$(aItem).data('type', 'action');
 		aItem.setAttribute('role', 'img');
@@ -2224,6 +2270,9 @@ L.Control.Menubar = L.Control.extend({
 			return false;
 
 		if (menuItem.id === 'insertmultimedia' && this._map['wopi'].DisableInsertLocalImage)
+			return false;
+
+		if (menuItem.id === 'remotemultimedia' && !this._map['wopi'].EnableInsertRemoteFile)
 			return false;
 
 		if (menuItem.id && menuItem.id.startsWith('fullscreen-presentation') && this._map['wopi'].HideExportOption)

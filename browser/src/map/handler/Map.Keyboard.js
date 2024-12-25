@@ -76,7 +76,7 @@ L.Map.Keyboard = L.Handler.extend({
 		90  : UNOKey.Z,
 		91  : null, // left window key	: UNKOWN
 		92  : null, // right window key	: UNKOWN
-		93  : null, // select key	: UNKOWN
+		93	: UNOKey.CONTEXTMENU,
 		96  : UNOKey.NUM0,
 		97  : UNOKey.NUM1,
 		98  : UNOKey.NUM2,
@@ -137,9 +137,11 @@ L.Map.Keyboard = L.Handler.extend({
 		39  : true, // right arrow
 		40  : true, // down arrow
 		45  : true, // insert
+		93  : true, // context menu
 		113 : true  // f2
 	},
 
+	// See https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/keyCode for list of keycodes
 	keyCodes: {
 
 		pageUp:   33,
@@ -205,7 +207,7 @@ L.Map.Keyboard = L.Handler.extend({
 		Z:        90,
 		LEFTWINDOWKEY :    [91,91], // left window key	: UNKOWN  and also for MAC
 		RIGHTWINDOWKEY:    [92,93], // right window key	: UNKOWN  and also for MAC
-		SELECTKEY:         93, // select key	: UNKOWN
+		CONTEXTMENU:       93, // context menu
 		// NUM0:     96,
 		// NUM1:     97,
 		// NUM2:     98,
@@ -275,6 +277,7 @@ L.Map.Keyboard = L.Handler.extend({
 		46:    true,  // DELETE
 		91:    true,  // LEFTWINDOWKEY
 		92:    true,  // RIGHTWINDOWKEY
+		93:    true,  // CONTEXTMENU
 		112:    true,  //F1
 		113:    true,  //F2
 		114:    true,  //F3
@@ -426,7 +429,10 @@ L.Map.Keyboard = L.Handler.extend({
 					if (app.file.fileBasedView)
 						this._map._docLayer._checkSelectedPart();
 				}
-				else if (this._map.isEditMode() && !app.file.fileBasedView) {
+				else if (this._map.isEditMode() && !app.file.fileBasedView &&
+						this._map.jsdialog &&
+						!this._map.jsdialog.hasDialogOpened()
+				) {
 					this._map.deletePage(this._map._docLayer._selectedPart);
 				}
 				ev.preventDefault();
@@ -659,6 +665,11 @@ L.Map.Keyboard = L.Handler.extend({
 			return true;
 		}
 
+		// Control + Shift + I, open browser developper tools
+		if (this._isCtrlKey(e) && e.shiftKey && e.keyCode === this.keyCodes.I) {
+			return true;
+		}
+
 		if (e.keyCode !== this.keyCodes.C[DEFAULT] && e.keyCode !== this.keyCodes.V[DEFAULT] && e.keyCode !== this.keyCodes.X[DEFAULT] &&
 		/* Safari */ e.keyCode !== this.keyCodes.C[MAC] && e.keyCode !== this.keyCodes.V[MAC] && e.keyCode !== this.keyCodes.X[MAC]) {
 			// not copy or paste
@@ -721,14 +732,17 @@ L.Map.Keyboard = L.Handler.extend({
 			return true;
 		}
 
-		if (this._isCtrlKey(e) && e.keyCode === this.keyCodes.Z) {
-			app.socket.sendMessage('uno .uno:Undo');
+		if (
+			(this._isCtrlKey(e) && e.keyCode === this.keyCodes.Y) ||
+			(this._isCtrlKey(e) && e.shiftKey && e.keyCode === this.keyCodes.Z)
+		) {
+			app.socket.sendMessage('uno .uno:Redo');
 			e.preventDefault();
 			return true;
 		}
 
-		if (this._isCtrlKey(e) && e.keyCode === this.keyCodes.Y) {
-			app.socket.sendMessage('uno .uno:Redo');
+		if (this._isCtrlKey(e) && e.keyCode === this.keyCodes.Z) {
+			app.socket.sendMessage('uno .uno:Undo');
 			e.preventDefault();
 			return true;
 		}

@@ -501,7 +501,7 @@ public:
                 remove(CONNECTION);
                 return;
         }
-        set(CONNECTION, value);
+        set(CONNECTION, std::move(value));
     }
 
     /// Adds a new "Cookie" header entry with the given content.
@@ -755,9 +755,9 @@ public:
     void dumpState(std::ostream& os, const std::string& indent = "\n  ") const
     {
         os << indent << "http::Request: " << _version << ' ' << _verb << ' ' << _url;
-        os << indent << "stage: " << name(_stage);
-        os << indent << "headers: ";
-        _header.serialize(os);
+        os << indent << "\tstage: " << name(_stage);
+        os << indent << "\theaders: ";
+        Util::joinPair(os, _header, (indent + '\t').c_str());
     }
 
 private:
@@ -1055,14 +1055,17 @@ public:
     void dumpState(std::ostream& os, const std::string& indent = "\n  ") const
     {
         os << indent << "http::Response: #" << _fd;
-        os << indent << "statusLine: " << _statusLine.httpVersion() << ' '
+        os << indent << "\tstatusLine: " << _statusLine.httpVersion() << ' '
            << getReasonPhraseForCode(_statusLine.statusCode()) << ' ' << _statusLine.reasonPhrase();
-        os << indent << "state: " << name(_state);
-        os << indent << "parseStage: " << name(_parserStage);
-        os << indent << "recvBodySize: " << _recvBodySize;
-        os << indent << "headers: ";
-        _header.serialize(os);
-        os << indent << "body: " << Util::dumpHex(_body);
+        os << indent << "\tstate: " << name(_state);
+        os << indent << "\tparseStage: " << name(_parserStage);
+        os << indent << "\trecvBodySize: " << _recvBodySize;
+        os << indent << "\theaders: ";
+
+        std::string childIndent = indent + '\t';
+        Util::joinPair(os, _header, childIndent.c_str());
+        os << indent
+           << Util::dumpHex(_body, "\tbody:\n", Util::replace(childIndent, "\n", "").c_str());
     }
 
 private:
@@ -1201,9 +1204,9 @@ public:
     }
 
     /// Returns the default timeout.
-    static std::chrono::milliseconds getDefaultTimeout()
+    static constexpr std::chrono::milliseconds getDefaultTimeout()
     {
-        return std::chrono::duration_cast<std::chrono::milliseconds>( net::Defaults::get().HTTPTimeout );
+        return std::chrono::seconds(30);
     }
 
     /// Returns the current protocol scheme.
@@ -1233,7 +1236,7 @@ public:
     void setFinishedHandler(FinishedCallback onFinished) { _onFinished = std::move(onFinished); }
 
     /// The onConnectFail callback handler signature.
-    using ConnectFailCallback = std::function<void()>;
+    using ConnectFailCallback = std::function<void(const std::shared_ptr<Session>& session)>;
 
     void setConnectFailHandler(ConnectFailCallback onConnectFail) { _onConnectFail = std::move(onConnectFail); }
 
@@ -1377,33 +1380,36 @@ public:
         }
     }
 
+    net::AsyncConnectResult connectionResult()
+    {
+        return _result;
+    }
+
     /// Returns the socket FD, for logging/informational purposes.
     int getFD() const { return _fd; }
 
     void dumpState(std::ostream& os, const std::string& indent) const override
     {
         const auto now = std::chrono::steady_clock::now();
-        os << indent << "http::Session: #" << _fd;
-        os << indent << "connected: " << std::boolalpha << _connected;
-        os << indent << "timeout: " << _timeout;
-        os << indent << "host: " << _host;
-        os << indent << "port: " << _port;
-        os << indent << "protocol: " << name(_protocol);
-        os << indent << "handshakeSslVerifyFailure: " << _handshakeSslVerifyFailure;
-        os << indent << "startTime: " << Util::getTimeForLog(now, _startTime);
-        _request.dumpState(os, indent);
+        os << indent << "http::Session: #" << _fd << " (" << (_socket.lock() ? "have" : "no")
+           << " socket)";
+        os << indent << "\tconnected: " << std::boolalpha << _connected;
+        os << indent << "\ttimeout: " << _timeout;
+        os << indent << "\thost: " << _host;
+        os << indent << "\tport: " << _port;
+        os << indent << "\tprotocol: " << name(_protocol);
+        os << indent << "\thandshakeSslVerifyFailure: " << _handshakeSslVerifyFailure;
+        os << indent << "\tstartTime: " << Util::getTimeForLog(now, _startTime);
+        _request.dumpState(os, indent + '\t');
         if (_response)
-            _response->dumpState(os, indent);
+            _response->dumpState(os, indent + '\t');
         else
-            os << indent << "response: null";
+            os << indent << "\tresponse: null";
+
+        os << '\n';
 
         // We are typically called from the StreamSocket, so don't
         // recurse back by calling dumpState on the socket again.
-        std::shared_ptr<StreamSocket> socket = _socket.lock();
-        if (socket)
-            os << indent << "socket: #" << socket->getFD();
-        else
-            os << indent << "socket: null";
     }
 
 private:
@@ -1447,6 +1453,30 @@ private:
         return _response->state() == Response::State::Complete;
     }
 
+    void callOnFinished()
+    {
+        if (!_onFinished)
+            return;
+
+        LOG_TRC("onFinished calling client");
+        std::shared_ptr<Session> self = shared_from_this();
+        try
+        {
+            [[maybe_unused]] const long references = self.use_count();
+            assert(references > 1 && "Expected more than 1 reference to http::Session.");
+
+            _onFinished(self);
+
+            assert(self.use_count() > 1 &&
+                    "Erroneously onFinish reset 'this'. Use 'addCallback()' on the "
+                    "SocketPoll to reset on idle instead.");
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Error while invoking onFinished client callback: " << exc.what());
+        }
+    }
+
     /// Set up a new request and response.
     void newRequest(const Request& req)
     {
@@ -1467,26 +1497,8 @@ private:
             assert(_response->state() != Response::State::Incomplete &&
                    "Unexpected response in Incomplete state");
             assert(_response->done() && "Must have response in done state");
-            if (_onFinished)
-            {
-                LOG_TRC("onFinished calling client");
-                auto self = shared_from_this();
-                try
-                {
-                    [[maybe_unused]] const auto references = self.use_count();
-                    assert(references > 1 && "Expected more than 1 reference to http::Session.");
 
-                    _onFinished(std::static_pointer_cast<Session>(self));
-
-                    assert(self.use_count() > 1 &&
-                           "Erroneously onFinish reset 'this'. Use 'addCallback()' on the "
-                           "SocketPoll to reset on idle instead.");
-                }
-                catch (const std::exception& exc)
-                {
-                    LOG_ERR("Error while invoking onFinished client callback: " << exc.what());
-                }
-            }
+            callOnFinished();
 
             if (_response->header().getConnectionToken() == Header::ConnectionToken::Close)
             {
@@ -1608,8 +1620,37 @@ private:
 
             if (!socket->send(_request))
             {
+                _result = net::AsyncConnectResult::SocketError;
                 LOG_ERR("Error while writing to socket");
             }
+        }
+    }
+
+    std::shared_ptr<Session> shared_from_this()
+    {
+        return std::static_pointer_cast<Session>(ProtocolHandlerInterface::shared_from_this());
+    }
+
+    void callOnConnectFail()
+    {
+        if (!_onConnectFail)
+            return;
+
+        std::shared_ptr<Session> self = shared_from_this();
+        try
+        {
+            [[maybe_unused]] const long references = self.use_count();
+            assert(references > 1 && "Expected more than 1 reference to http::Session.");
+
+            _onConnectFail(self);
+
+            assert(self.use_count() > 1 &&
+                    "Erroneously onConnectFail reset 'this'. Use 'addCallback()' on the "
+                    "SocketPoll to reset on idle instead.");
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Error while invoking onConnectFail client callback: " << exc.what());
         }
     }
 
@@ -1622,7 +1663,10 @@ private:
         {
             LOG_TRC("onHandshakeFail");
             _handshakeSslVerifyFailure = socket->getSslVerifyResult();
+            _result = net::AsyncConnectResult::SSLHandShakeFailure;
         }
+
+        callOnConnectFail();
     }
 
     void onDisconnect() override
@@ -1658,7 +1702,7 @@ private:
         return socket; // Return the shared pointer.
     }
 
-    void asyncConnectCompleted(SocketPoll& poll, std::shared_ptr<StreamSocket> socket)
+    void asyncConnectCompleted(SocketPoll& poll, const std::shared_ptr<StreamSocket> &socket, net::AsyncConnectResult result)
     {
         assert((!socket || _fd == socket->getFD()) &&
                "The socket FD must have been set in onConnect");
@@ -1666,14 +1710,12 @@ private:
         // When used with proxy.php we may indeed get nullptr here.
         // assert(socket && "Unexpected nullptr returned from net::connect");
         _socket = socket; // Hold a weak pointer to it.
+        _result = result;
 
         if (!socket)
         {
             LOG_ERR("Failed to connect to " << _host << ':' << _port);
-
-            if (_onConnectFail)
-                _onConnectFail();
-
+            callOnConnectFail();
             return;
         }
 
@@ -1688,9 +1730,9 @@ private:
     {
         _socket.reset(); // Reset to make sure we are disconnected.
 
-        auto pushConnectCompleteToPoll = [this, &poll](std::shared_ptr<StreamSocket> socket) {
-            poll.addCallback([selfLifecycle = shared_from_this(), this, &poll, socket=std::move(socket)]() {
-                asyncConnectCompleted(poll, socket);
+        auto pushConnectCompleteToPoll = [this, &poll](std::shared_ptr<StreamSocket> socket, net::AsyncConnectResult result ) {
+            poll.addCallback([selfLifecycle = shared_from_this(), this, &poll, socket=std::move(socket), &result]() {
+                asyncConnectCompleted(poll, socket, result);
             });
         };
 
@@ -1743,6 +1785,7 @@ private:
     ConnectFailCallback _onConnectFail;
     std::shared_ptr<Response> _response;
     std::weak_ptr<StreamSocket> _socket; ///< Must be the last member.
+    net::AsyncConnectResult _result; // last connection tentative result
 };
 
 /// HTTP Get a URL synchronously.
@@ -1948,21 +1991,23 @@ public:
     void dumpState(std::ostream& os, const std::string& indent) const override
     {
         const auto now = std::chrono::steady_clock::now();
-        os << indent << "http::server::Session: #" << _fd;
-        os << indent << "connected: " << std::boolalpha << _connected;
-        os << indent << "startTime: " << Util::getTimeForLog(now, _startTime);
-        os << indent << "mimeType: " << _mimeType;
-        os << indent << "statusCode: " << getReasonPhraseForCode(_statusCode);
-        os << indent << "size: " << _size;
-        os << indent << "pos: " << _pos;
-        os << indent << "start: " << _start;
-        os << indent << "end: " << _end;
-        os << indent << "startIsSuffix: " << _startIsSuffix;
-        os << indent << "data: " << Util::dumpHex(_data);
-        if (_socket)
-            _socket->dumpState(os);
-        else
-            os << indent << "socket: null";
+        os << indent << "http::server::Session: #" << _fd << " (" << (_socket ? "have" : "no")
+           << " socket)";
+        os << indent << "\tconnected: " << std::boolalpha << _connected;
+        os << indent << "\tstartTime: " << Util::getTimeForLog(now, _startTime);
+        os << indent << "\tmimeType: " << _mimeType;
+        os << indent << "\tstatusCode: " << getReasonPhraseForCode(_statusCode);
+        os << indent << "\tsize: " << _size;
+        os << indent << "\tpos: " << _pos;
+        os << indent << "\tstart: " << _start;
+        os << indent << "\tend: " << _end;
+        os << indent << "\tstartIsSuffix: " << _startIsSuffix;
+        os << indent
+           << Util::dumpHex(_data, "\tdata:\n", Util::replace(indent + '\t', "\n", "").c_str());
+        os << '\n';
+
+        // We are typically called from the StreamSocket, so don't
+        // recurse back by calling dumpState on the socket again.
     }
 
 private:

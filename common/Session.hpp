@@ -56,7 +56,7 @@ public:
     }
 
     /// Lookup one session in the map that matches this canonical view id, only used by Kit
-    std::shared_ptr<T> findByCanonicalId(int id)
+    std::shared_ptr<T> findByCanonicalId(int id) const
     {
         for (const auto &it : *this) {
             if (it.second->getCanonicalViewId() == id)
@@ -203,10 +203,16 @@ public:
     void setIsActive(bool active) { _isActive = active; }
 
     /// Returns the inactivity time of the client in milliseconds.
+    double getInactivityMS(const std::chrono::steady_clock::time_point &now) const
+    {
+        const auto duration = now - _lastActivityTime;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+    }
+
+    /// Returns the inactivity time of the client in milliseconds.
     double getInactivityMS() const
     {
-        const auto duration = (std::chrono::steady_clock::now() - _lastActivityTime);
-        return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+        return getInactivityMS(std::chrono::steady_clock::now());
     }
 
     void closeFrame() { _isCloseFrame = true; };
@@ -225,6 +231,8 @@ public:
     void setUserExtraInfo(const std::string& userExtraInfo) { _userExtraInfo = userExtraInfo; }
 
     void setUserPrivateInfo(const std::string& userPrivateInfo) { _userPrivateInfo = userPrivateInfo; }
+
+    void setServerPrivateInfo(const std::string& serverPrivateInfo) { _serverPrivateInfo = serverPrivateInfo; }
 
     void setUserName(const std::string& userName) { _userName = userName; }
 
@@ -259,6 +267,8 @@ public:
     const std::string& getUserExtraInfo() const { return _userExtraInfo; }
 
     const std::string& getUserPrivateInfo() const { return _userPrivateInfo; }
+
+    const std::string& getServerPrivateInfo() const { return _serverPrivateInfo; }
 
     const std::string& getDocURL() const { return  _docURL; }
 
@@ -381,6 +391,9 @@ private:
 
     /// Private info per user, not shared with others.
     std::string _userPrivateInfo;
+
+    /// Private info per server, shared with others.
+    std::string _serverPrivateInfo;
 
     /// In case a watermark has to be rendered on each tile.
     std::string _watermarkText;

@@ -24,8 +24,11 @@
 
 * [📋 Forum](https://forum.collaboraonline.com/)
 * [👥 Facebook](https://www.facebook.com/collaboraoffice/)
+* [🅾 Instagram](https://www.instagram.com/collaboraoffice/)
 * [🐣 𝕏(Twitter)](https://twitter.com/CollaboraOffice)
+* [🦋 Bluesky](https://bsky.app/profile/collaboraonline.com)
 * [🐘 Mastodon](https://mastodon.social/@CollaboraOffice)
+* [💼 LinkedIn](https://www.linkedin.com/products/collaboraproductivity-collabora-online/)
 
 ## Key features
 * View and edit text documents, spreadsheets, presentations & more
@@ -73,9 +76,9 @@ Please consult the README files in the component's directory for more details:
 
 ### Building
 
-See the corresponding READMEs:
-* **[ios/README](ios/README)**
-* **[android/README](android/README)**
+See the corresponding web pages:
+* **[Build for iOS](https://collaboraonline.github.io/post/build-code-ios/)**
+* **[Build for Android](https://collaboraonline.github.io/post/build-code-android/)**
 
 ### Releases and pre-releases
 

@@ -13,7 +13,7 @@
  * L.Control.NotebookbarImpress - definition of notebookbar content in Impress
  */
 
-/* global _ _UNO app */
+/* global _ _UNO */
 
 L.Control.NotebookbarImpress = L.Control.NotebookbarWriter.extend({
 
@@ -367,7 +367,7 @@ L.Control.NotebookbarImpress = L.Control.NotebookbarWriter.extend({
 					'command': 'presentinwindow',
 					'accessibility': { focusBack: true, combination: 'PW', de: null }
 				} : {},
-			!window.ThisIsAMobileApp && app.isExperimentalMode() ?
+			!window.ThisIsAMobileApp && window.canvasSlideshowEnabled ?
 			        {
 					'id': 'view-presentation-in-console',
 					'type': 'bigcustomtoolitem',
@@ -1214,8 +1214,8 @@ L.Control.NotebookbarImpress = L.Control.NotebookbarWriter.extend({
 				'accessibility': { focusBack: true, combination: 'IG', de: null }
 			},
 			{
-				'id': 'insert-insert-multimedia',
-				'type': 'bigcustomtoolitem',
+				'id': 'insert-insert-multimedia:InsertMultimediaMenu',
+				'type': 'menubutton',
 				'text': _UNO('.uno:InsertAVMedia'),
 				'command': 'insertmultimedia',
 				'accessibility': { focusBack: true, combination: 'MM', de: null }, // IM was already taken, so 'MM' for MultiMedia
@@ -1833,7 +1833,7 @@ L.Control.NotebookbarImpress = L.Control.NotebookbarWriter.extend({
 			{
 				'id': 'table-table-dialog',
 				'type': 'bigtoolitem',
-				'text': _UNO('.uno:TableDialog', 'presentation'),
+				'text': _UNO('.uno:TableDialog', 'presentation', true),
 				'command': '.uno:TableDialog',
 				'accessibility': { focusBack: false, combination: 'SD', de: null }
 			},

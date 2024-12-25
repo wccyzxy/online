@@ -13,6 +13,8 @@
 
 #include "DocumentBroker.hpp"
 
+#include <common/Anonymizer.hpp>
+
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -38,7 +40,6 @@
 #include "Exceptions.hpp"
 #include "COOLWSD.hpp"
 #include "FileServer.hpp"
-#include <NetUtil.hpp>
 #include "Socket.hpp"
 #include "Storage.hpp"
 #include "TileCache.hpp"
@@ -55,6 +56,7 @@
 #include <common/FileUtil.hpp>
 #include <common/Uri.hpp>
 #include <CommandControl.hpp>
+#include <wsd/Process.hpp>
 
 #if !MOBILEAPP
 #include <wopi/CheckFileInfo.hpp>
@@ -140,7 +142,6 @@ public:
         TerminatingPoll(threadName),
         _docBroker(docBroker)
     {
-        setLimiter( net::Defaults::get().MaxConnections );
     }
 
     void pollingThread() override
@@ -169,16 +170,16 @@ DocumentBroker::DocumentBroker(ChildType type, const std::string& uri, const Poc
     , _isViewFileExtension(false)
     , _saveManager(std::chrono::seconds(std::getenv("COOL_NO_AUTOSAVE") != nullptr
                                             ? 0
-                                            : COOLWSD::getConfigValueNonZero<int>(
+                                            : ConfigUtil::getConfigValueNonZero<int>(
                                                   "per_document.idlesave_duration_secs", 30)),
                    std::chrono::seconds(std::getenv("COOL_NO_AUTOSAVE") != nullptr
                                             ? 0
-                                            : COOLWSD::getConfigValueNonZero<int>(
+                                            : ConfigUtil::getConfigValueNonZero<int>(
                                                   "per_document.autosave_duration_secs", 300)),
-                   std::chrono::milliseconds(COOLWSD::getConfigValueNonZero<int>(
+                   std::chrono::milliseconds(ConfigUtil::getConfigValueNonZero<int>(
                        "per_document.min_time_between_saves_ms", 500)))
     , _storageManager(std::chrono::milliseconds(
-          COOLWSD::getConfigValueNonZero<int>("per_document.min_time_between_uploads_ms", 5000)))
+          ConfigUtil::getConfigValueNonZero<int>("per_document.min_time_between_uploads_ms", 5000)))
     , _isModified(false)
     , _cursorPosX(0)
     , _cursorPosY(0)
@@ -193,10 +194,11 @@ DocumentBroker::DocumentBroker(ChildType type, const std::string& uri, const Poc
     , _loadDuration(0)
     , _wopiDownloadDuration(0)
     , _mobileAppDocId(mobileAppDocId)
-    , _alwaysSaveOnExit(COOLWSD::getConfigValue<bool>("per_document.always_save_on_exit", false))
-    , _backgroundAutoSave(COOLWSD::getConfigValue<bool>("per_document.background_autosave", true))
+    , _alwaysSaveOnExit(ConfigUtil::getConfigValue<bool>("per_document.always_save_on_exit", false))
+    , _backgroundAutoSave(
+          ConfigUtil::getConfigValue<bool>("per_document.background_autosave", true))
     , _backgroundManualSave(
-          COOLWSD::getConfigValue<bool>("per_document.background_manualsave", true))
+          ConfigUtil::getConfigValue<bool>("per_document.background_manualsave", true))
 #if !MOBILEAPP
     , _admin(Admin::instance())
 #endif
@@ -228,13 +230,15 @@ DocumentBroker::DocumentBroker(ChildType type, const std::string& uri, const Poc
     }
 }
 
+pid_t DocumentBroker::getPid() const { return _childProcess ? _childProcess->getPid() : 0; }
+
 void DocumentBroker::setupPriorities()
 {
     if constexpr (Util::isMobileApp())
         return;
     if (_type == ChildType::Batch)
     {
-        const int prio = COOLWSD::getConfigValue<int>("per_document.batch_priority", 5);
+        const int prio = ConfigUtil::getConfigValue<int>("per_document.batch_priority", 5);
         Util::setProcessAndThreadPriorities(_childProcess->getPid(), prio);
     }
 }
@@ -344,7 +348,7 @@ void DocumentBroker::pollThread()
 
 #if !MOBILEAPP
     CONFIG_STATIC const std::size_t IdleDocTimeoutSecs =
-        COOLWSD::getConfigValue<int>("per_document.idle_timeout_secs", 3600);
+        ConfigUtil::getConfigValue<int>("per_document.idle_timeout_secs", 3600);
 
     // Used to accumulate B/W deltas.
     uint64_t adminSent = 0;
@@ -358,26 +362,26 @@ void DocumentBroker::pollThread()
         // ignore load time out
         std::getenv("PAUSEFORDEBUGGER") ? -1 :
 #endif
-        COOLWSD::getConfigValue<int>("per_document.limit_load_secs", 100);
+            ConfigUtil::getConfigValue<int>("per_document.limit_load_secs", 100);
 
     auto loadDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(limit_load_secs);
 #endif
 
     const auto limStoreFailures =
-        COOLWSD::getConfigValue<int>("per_document.limit_store_failures", 5);
+        ConfigUtil::getConfigValue<int>("per_document.limit_store_failures", 5);
 
     bool waitingForMigrationMsg = false;
     std::chrono::time_point<std::chrono::steady_clock> migrationMsgStartTime;
     static const std::chrono::microseconds migrationMsgTimeout = std::chrono::seconds(
-        COOLWSD::getConfigValue<int>("indirection_endpoint.migration_timeout_secs", 180));
-    const std::chrono::microseconds PollTimeoutMicroS = net::Defaults::get().SocketPollTimeout;
+        ConfigUtil::getConfigValue<int>("indirection_endpoint.migration_timeout_secs", 180));
 
     // Main polling loop goodness.
     while (!_stop && _poll->continuePolling() && !SigUtil::getTerminationFlag())
     {
         // Poll more frequently while unloading to cleanup sooner.
         const bool unloading = isMarkedToDestroy() || _docState.isUnloadRequested();
-        _poll->poll(unloading ? PollTimeoutMicroS / 16 : PollTimeoutMicroS);
+        _poll->poll(unloading ? SocketPoll::DefaultPollTimeoutMicroS / 16
+                              : SocketPoll::DefaultPollTimeoutMicroS);
 
         // Consolidate updates across multiple processed events.
         processBatchUpdates();
@@ -1009,6 +1013,7 @@ bool DocumentBroker::download(
 
     // Call the storage specific fileinfo functions
     std::string templateSource;
+
 #if !MOBILEAPP
     std::chrono::milliseconds checkFileInfoCallDurationMs = std::chrono::milliseconds::zero();
     WopiStorage* wopiStorage = dynamic_cast<WopiStorage*>(_storage.get());
@@ -1282,10 +1287,11 @@ DocumentBroker::updateSessionWithWopiInfo(const std::shared_ptr<ClientSession>& 
     const std::string username = wopiFileInfo->getUsername();
     const std::string userExtraInfo = wopiFileInfo->getUserExtraInfo();
     const std::string userPrivateInfo = wopiFileInfo->getUserPrivateInfo();
+    const std::string serverPrivateInfo = wopiFileInfo->getServerPrivateInfo();
     const std::string watermarkText =
-        (config::isSupportKeyEnabled() && !COOLWSD::OverrideWatermark.empty())
-        ? COOLWSD::OverrideWatermark
-        : wopiFileInfo->getWatermarkText();
+        (ConfigUtil::isSupportKeyEnabled() && !COOLWSD::OverrideWatermark.empty())
+            ? COOLWSD::OverrideWatermark
+            : wopiFileInfo->getWatermarkText();
     const std::string templateSource = wopiFileInfo->getTemplateSource();
 
     std::optional<bool> isAdminUser = wopiFileInfo->getIsAdminUser();
@@ -1379,6 +1385,7 @@ DocumentBroker::updateSessionWithWopiInfo(const std::shared_ptr<ClientSession>& 
     wopiInfo->set("DownloadAsPostMessage", wopiFileInfo->getDownloadAsPostMessage());
     wopiInfo->set("UserCanNotWriteRelative", wopiFileInfo->getUserCanNotWriteRelative());
     wopiInfo->set("EnableInsertRemoteImage", wopiFileInfo->getEnableInsertRemoteImage());
+    wopiInfo->set("EnableInsertRemoteFile", wopiFileInfo->getEnableInsertRemoteFile());
     wopiInfo->set("DisableInsertLocalImage", wopiFileInfo->getDisableInsertLocalImage());
     wopiInfo->set("EnableRemoteLinkPicker", wopiFileInfo->getEnableRemoteLinkPicker());
     wopiInfo->set("EnableShare", wopiFileInfo->getEnableShare());
@@ -1391,7 +1398,10 @@ DocumentBroker::updateSessionWithWopiInfo(const std::shared_ptr<ClientSession>& 
         wopiInfo->set("HideChangeTrackingControls", wopiFileInfo->getHideChangeTrackingControls() ==
                                                         WopiStorage::WOPIFileInfo::TriState::True);
     wopiInfo->set("IsOwner", session->isDocumentOwner());
-    bool disablePresentation = !watermarkText.empty() || wopiFileInfo->getDisableExport() || wopiFileInfo->getHideExportOption();
+
+    bool disablePresentation = wopiFileInfo->getDisableExport() || wopiFileInfo->getHideExportOption();
+    // the new slideshow supports watermarking, anyway it's still an experimental features
+    disablePresentation = disablePresentation || (!ConfigUtil::getBool("canvas_slideshow_enabled", true) && !watermarkText.empty());
     wopiInfo->set("DisablePresentation", disablePresentation);
 
     std::ostringstream ossWopiInfo;
@@ -1404,7 +1414,7 @@ DocumentBroker::updateSessionWithWopiInfo(const std::shared_ptr<ClientSession>& 
     // document load fails, cool is able to tell its parent frame via PostMessage API.
     session->sendTextFrame("wopi: " + wopiInfoString);
 
-    if (config::getBool("logging.userstats", false))
+    if (ConfigUtil::getBool("logging.userstats", false))
     {
         // using json because fetching details from json string is easier and will be consistent
         Object::Ptr userStats = new Object();
@@ -1420,18 +1430,19 @@ DocumentBroker::updateSessionWithWopiInfo(const std::shared_ptr<ClientSession>& 
         LOG_ANY("User stats: " << userStatsString);
     }
 
-    if (config::getBool("logging.disable_server_audit", false))
+    if (ConfigUtil::getBool("logging.disable_server_audit", false))
     {
         _serverAudit.disable();
     }
 
     // Pass the ownership to the client session.
-    session->setWopiFileInfo(wopiFileInfo);
+    session->setWopiFileInfo(std::move(wopiFileInfo));
     session->setUserId(userId);
     session->setUserName(username);
     session->setUserExtraInfo(userExtraInfo);
     session->setIsAdminUser(isAdminUser);
     session->setUserPrivateInfo(userPrivateInfo);
+    session->setServerPrivateInfo(serverPrivateInfo);
     session->setWatermarkText(watermarkText);
 
     return templateSource;
@@ -1853,7 +1864,7 @@ void DocumentBroker::handleSaveResponse(const std::shared_ptr<ClientSession>& se
     // wasModified is only set when LOKit saves the document.
     // If the document was modified before saving, it would
     // be true. Otherwise, it's false. Meaningful when forced
-    // saving (i.e. dontSaveIfUnmodified=0), otherwise
+    // saving (i.e. dontSaveIfUnmodified=false), otherwise
     // result is blank in that case and we can't know if
     // the document saved was modified or not.
     if (json->has("wasModified"))
@@ -2125,7 +2136,7 @@ void DocumentBroker::uploadToStorageInternal(const std::shared_ptr<ClientSession
         LOG_DBG("New filename [" << COOLWSD::anonymizeUrl(newFilename)
                                  << "] will be known by its fileId [" << fileId << ']');
 
-        Util::mapAnonymized(newFilename, fileId);
+        Anonymizer::mapAnonymized(newFilename, fileId);
     }
 
     if (!_storage)
@@ -2627,8 +2638,10 @@ void DocumentBroker::setLoaded()
         const auto minTimeoutSecs = ((_loadDuration * 4).count() + 500) / 1000;
         _saveManager.setSavingTimeout(
             std::max(std::chrono::seconds(minTimeoutSecs), std::chrono::seconds(5)));
-        LOG_DBG("Document loaded in " << _loadDuration << ", saving-timeout set to "
-                                      << _saveManager.getSavingTimeout());
+        LOG_INF("Document [" << _docKey << "] loaded in " << _loadDuration
+                             << ", saving-timeout set to " << _saveManager.getSavingTimeout()
+                             << ", doc PSS: " << Util::getMemoryUsagePSS(_childProcess->getPid())
+                             << " KB, total PSS: " << Util::getProcessTreePss(getpid()) << " KB");
 
         if(_unitWsd != nullptr)
         {
@@ -2907,7 +2920,7 @@ void DocumentBroker::autoSaveAndStop(const std::string& reason)
         if (_alwaysSaveOnExit && !_storageManager.lastUploadSuccessful())
         {
             CONFIG_STATIC const auto limStoreFailures =
-                COOLWSD::getConfigValue<int>("per_document.limit_store_failures", 5);
+                ConfigUtil::getConfigValue<int>("per_document.limit_store_failures", 5);
 
             if (limStoreFailures > 0 &&
                 _storageManager.uploadFailureCount() >= static_cast<std::size_t>(limStoreFailures))
@@ -3085,7 +3098,10 @@ bool DocumentBroker::sendUnoSave(const std::shared_ptr<ClientSession>& session,
     // Note: It's odd to capture these here, but this function is used from ClientSession too.
     const bool autosave = isAutosave || (_unitWsd && _unitWsd->isAutosave());
     const bool backgroundConfigured = (autosave && _backgroundAutoSave) || _backgroundManualSave;
-    const bool background = forceBackgroundEnv || (!finalWrite && backgroundConfigured);
+    const bool canBackground = forceBackgroundEnv || (!finalWrite && backgroundConfigured);
+    constexpr std::size_t MaxFailureCountForBackgroundSaving = 2; // Give only 1 extra chance.
+    const bool background = canBackground && _saveManager.lastSaveSuccessful() &&
+                            _saveManager.saveFailureCount() < MaxFailureCountForBackgroundSaving;
 
     if (finalWrite)
         LOG_TRC("suspected final save: don't do background write");
@@ -3185,8 +3201,8 @@ DocumentBroker::addSessionInternal(const std::shared_ptr<ClientSession>& session
     const std::string id = session->getId();
 
     // Request a new session from the child kit.
-    const std::string aMessage = "session " + id + ' ' + _docKey + ' ' + _docId;
-    _childProcess->sendTextFrame(aMessage);
+    const std::string message = "session " + id + ' ' + _docKey + ' ' + _docId;
+    _childProcess->sendTextFrame(message);
 
 #if !MOBILEAPP
     // Tell the admin console about this new doc
@@ -3532,18 +3548,18 @@ void DocumentBroker::setKitLogLevel(const std::string& level)
 
 std::string DocumentBroker::getDownloadURL(const std::string& downloadId)
 {
-    auto aFound = _registeredDownloadLinks.find(downloadId);
-    if (aFound != _registeredDownloadLinks.end())
-        return aFound->second;
+    auto found = _registeredDownloadLinks.find(downloadId);
+    if (found != _registeredDownloadLinks.end())
+        return found->second;
 
     return "";
 }
 
 void DocumentBroker::unregisterDownloadId(const std::string& downloadId)
 {
-    auto aFound = _registeredDownloadLinks.find(downloadId);
-    if (aFound != _registeredDownloadLinks.end())
-        _registeredDownloadLinks.erase(aFound);
+    auto found = _registeredDownloadLinks.find(downloadId);
+    if (found != _registeredDownloadLinks.end())
+        _registeredDownloadLinks.erase(found);
 }
 
 /// Handles input from the prisoner / child kit process
@@ -3829,7 +3845,6 @@ bool DocumentBroker::lookupSendClipboardTag(const std::shared_ptr<StreamSocket> 
             // The custom header for the clipboard of an already closed document.
             oss << "HTTP/1.1 200 OK\r\n"
                 << "Last-Modified: " << Util::getHttpTimeNow() << "\r\n"
-                << "User-Agent: " << http::getAgentString() << "\r\n"
                 << "Content-Length: " << saved->length() << "\r\n"
                 << "Content-Type: application/octet-stream\r\n"
                 << "X-Content-Type-Options: nosniff\r\n"
@@ -4565,6 +4580,7 @@ void DocumentBroker::dumpState(std::ostream& os)
     os << "\n  backgroundAutoSave: " << (_backgroundAutoSave?"true":"false");
     os << "\n  backgroundManualSave: " << (_backgroundManualSave?"true":"false");
     os << "\n  isViewFileExtension: " << _isViewFileExtension;
+    os << "\n  Total PSS: " << Util::getProcessTreePss(getpid()) << " KB";
 #if !MOBILEAPP
     os << "\n  last quarantined version: "
        << (_quarantine && _quarantine->isEnabled() ? _quarantine->lastQuarantinedFilePath()

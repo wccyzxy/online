@@ -16,16 +16,18 @@
 
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <memory>
 #include <set>
 #include <sstream>
 #include <string>
 
-#include <Protocol.hpp>
-#include <net/WebSocketHandler.hpp>
 #include <Log.hpp>
+#include <Protocol.hpp>
 #include <Unit.hpp>
 #include <Util.hpp>
+#include <common/ConfigUtil.hpp>
+#include <net/WebSocketHandler.hpp>
 #include <wsd/COOLWSD.hpp>
 #include <wsd/Exceptions.hpp>
 
@@ -276,6 +278,14 @@ std::string AdminModel::query(const std::string& command)
     {
         return std::to_string(std::max(_sentStatsSize, _recvStatsSize));
     }
+    else if (token == "connection_activity")
+    {
+        return getConnectionActivity();
+    }
+    else if (token == "connection_stats_size")
+    {
+        return std::to_string(_connStatsSize);
+    }
 
     return std::string("");
 }
@@ -407,6 +417,17 @@ void AdminModel::addRecvStats(uint64_t recv)
         _recvStats.pop_front();
 
     notify("recv_activity " + std::to_string(recv));
+}
+
+void AdminModel::addConnectionStats(size_t connections)
+{
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
+    _connStats.push_back(connections);
+    if (_connStats.size() > _connStatsSize)
+        _connStats.pop_front();
+
+    notify("connection_activity " + std::to_string(connections));
 }
 
 void AdminModel::setCpuStatsSize(unsigned size)
@@ -561,7 +582,7 @@ void AdminModel::addDocument(const std::string& docKey, pid_t pid,
     const std::string& wopiHost = wopiSrc.getHost();
     oss << memoryAllocated << ' ' << wopiHost << ' ' << isViewReadOnly << ' ' << wopiSrc.toString()
         << ' ' << Uri::decode(docKey);
-    if (COOLWSD::getConfigValue<bool>("logging.docstats", false))
+    if (ConfigUtil::getConfigValue<bool>("logging.docstats", false))
     {
         std::string docstats = "docstats : adding a document : " + filename
                             + ", created by : " + COOLWSD::anonymizeUsername(userName)
@@ -575,6 +596,8 @@ void AdminModel::addDocument(const std::string& docKey, pid_t pid,
 
 void AdminModel::doRemove(std::map<std::string, std::unique_ptr<Document>>::iterator &docIt)
 {
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
     std::string docItKey = docIt->first;
     // don't send the routing_rmdoc if document is migrating
     if (getCurrentMigDoc() != docItKey)
@@ -694,6 +717,19 @@ std::string AdminModel::getRecvActivity()
     return oss.str();
 }
 
+std::string AdminModel::getConnectionActivity()
+{
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
+    std::ostringstream oss;
+    for (const auto& i: _connStats)
+    {
+        oss << i << ',';
+    }
+
+    return oss.str();
+}
+
 unsigned AdminModel::getTotalActiveViews()
 {
     ASSERT_CORRECT_THREAD_OWNER(_owner);
@@ -712,6 +748,8 @@ unsigned AdminModel::getTotalActiveViews()
 
 std::vector<DocBasicInfo> AdminModel::getDocumentsSortedByIdle() const
 {
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
     std::vector<DocBasicInfo> docs;
     docs.reserve(_documents.size());
     for (const auto& it: _documents)
@@ -726,7 +764,7 @@ std::vector<DocBasicInfo> AdminModel::getDocumentsSortedByIdle() const
     std::sort(std::begin(docs), std::end(docs),
               [](const DocBasicInfo& a, const DocBasicInfo& b)
               {
-                return a.getIdleTime() >= b.getIdleTime();
+                return a.getIdleTime() > b.getIdleTime();
               });
 
     return docs;
@@ -734,6 +772,8 @@ std::vector<DocBasicInfo> AdminModel::getDocumentsSortedByIdle() const
 
 void AdminModel::cleanupResourceConsumingDocs()
 {
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
     DocCleanupSettings& settings = _defDocProcSettings.getCleanupSettings();
 
     for (const auto& it: _documents)
@@ -878,9 +918,12 @@ void AdminModel::setDocWopiUploadDuration(const std::string& docKey, const std::
         it->second->setWopiUploadDuration(wopiUploadDuration);
 }
 
-void AdminModel::addSegFaultCount(unsigned segFaultCount)
+void AdminModel::addErrorExitCounters(unsigned segFaultCount, unsigned killedCount,
+                                      unsigned oomKilledCount)
 {
     _segFaultCount += segFaultCount;
+    _killedCount += killedCount;
+    _oomKilledCount += oomKilledCount;
 }
 
 void AdminModel::addLostKitsTerminated(unsigned lostKitsTerminated)
@@ -1125,10 +1168,13 @@ void PrintKitAggregateMetrics(std::ostringstream &oss, const char* name, const c
 
 void AdminModel::getMetrics(std::ostringstream &oss)
 {
+    ASSERT_CORRECT_THREAD_OWNER(_owner);
+
     oss << "coolwsd_count " << getPidsFromProcName(std::regex("coolwsd"), nullptr) << std::endl;
     oss << "coolwsd_thread_count " << Util::getStatFromPid(getpid(), 19) << std::endl;
     oss << "coolwsd_cpu_time_seconds " << Util::getCpuUsage(getpid()) / sysconf (_SC_CLK_TCK) << std::endl;
     oss << "coolwsd_memory_used_bytes " << Util::getMemoryUsagePSS(getpid()) * 1024 << std::endl;
+    oss << "coolwsd_tcp_connections_used " << StreamSocket::getExternalConnectionCount() << std::endl;
     oss << std::endl;
 
     oss << "forkit_count " << getPidsFromProcName(std::regex("forkit"), nullptr) << std::endl;
@@ -1148,6 +1194,8 @@ void AdminModel::getMetrics(std::ostringstream &oss)
     oss << "kit_assigned_count " << kitStats.assignedCount << std::endl;
     oss << "kit_segfault_count " << _segFaultCount << std::endl;
     oss << "kit_lost_terminated_count " << _lostKitsTerminatedCount << std::endl;
+    oss << "kit_killed_count " << _killedCount << std::endl;
+    oss << "kit_killed_oom_count " << _oomKilledCount << std::endl;
     PrintKitAggregateMetrics(oss, "thread_count", "", kitStats._threadCount);
     PrintKitAggregateMetrics(oss, "memory_used", "bytes", docStats._kitUsedMemory._active);
     PrintKitAggregateMetrics(oss, "cpu_time", "seconds", kitStats._cpuTime);

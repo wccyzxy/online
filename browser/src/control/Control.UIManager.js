@@ -23,6 +23,8 @@ L.Control.UIManager = L.Control.extend({
 	customButtons: [], // added by WOPI InsertButton
 	hiddenButtons: {},
 	hiddenCommands: {},
+	// Hidden Notebookbar tabs.
+	hiddenTabs: {},
 
 	onAdd: function (map) {
 		this.map = map;
@@ -69,6 +71,7 @@ L.Control.UIManager = L.Control.extend({
 
 		this.map['stateChangeHandler'].setItemValue('toggledarktheme', 'false');
 		this.map['stateChangeHandler'].setItemValue('invertbackground', 'false');
+		this.map['stateChangeHandler'].setItemValue('showannotations', 'true');
 	},
 
 	// UI initialization
@@ -185,6 +188,12 @@ L.Control.UIManager = L.Control.extend({
 		this.setCanvasColorAfterModeChange();
 		if (!window.mode.isMobile())
 			this.refreshAfterThemeChange();
+
+		if (app.map._docLayer._docType === 'spreadsheet') {
+			const calcGridSection = app.sectionContainer.getSectionWithName(L.CSections.CalcGrid.name);
+			if (calcGridSection)
+				calcGridSection.resetStrokeStyle();
+		}
 
 		this.map.fire('themechanged');
 	},
@@ -332,6 +341,7 @@ L.Control.UIManager = L.Control.extend({
 		var hasShare = this.map.wopi.EnableShare;
 
 		document.body.setAttribute('data-userInterfaceMode', currentMode);
+		document.body.setAttribute('data-docType', docType);
 
 		if (hasShare)
 			document.body.setAttribute('data-integratorSidebar', 'true');
@@ -356,6 +366,8 @@ L.Control.UIManager = L.Control.extend({
 			this.sheetsBar = JSDialog.SheetsBar(this.map, isDesktop || window.mode.isTablet());
 
 			let formulabarRow = document.getElementById('formulabar-row');
+			let spreadsheetToolbar = document.getElementById('spreadsheet-toolbar');
+			spreadsheetToolbar.classList.remove('hidden');
 			formulabarRow.classList.remove('hidden');
 			this.map.formulabar = JSDialog.FormulaBar(this.map);
 			this.map.addressInputField = JSDialog.AddressInputField(this.map);
@@ -386,7 +398,9 @@ L.Control.UIManager = L.Control.extend({
 			var showResolved = this.getBooleanDocTypePref('ShowResolved', true);
 			if (showResolved === false || showResolved === 'false')
 				this.map.sendUnoCommand('.uno:ShowResolvedAnnotations');
-
+			// Notify the inital status of comments
+			var initialCommentState = this.map['stateChangeHandler'].getItemValue('showannotations');
+			this._map.fire('commandstatechanged', {commandName : 'showannotations', state : initialCommentState});
 			this.map.mention = L.control.mention(this.map);
 		}
 
@@ -942,6 +956,21 @@ L.Control.UIManager = L.Control.extend({
 		this.map._docLayer._syncTileContainerSize();
 	},
 
+	showNotebookTab: function(id, show) {
+		if (show) {
+			delete this.hiddenTabs[id];
+		} else {
+			this.hiddenTabs[id] = true;
+		}
+		if (this.notebookbar) {
+			this.notebookbar.refreshContextTabsVisibility();
+		}
+	},
+
+	isTabVisible: function(name) {
+		return !(name in this.hiddenTabs);
+	},
+
 	isNotebookbarCollapsed: function() {
 		return $('#document-container').hasClass('tabs-collapsed');
 	},
@@ -1044,11 +1073,7 @@ L.Control.UIManager = L.Control.extend({
 		}
 
 		var userPrivateInfo = myViewData.userprivateinfo;
-		if (userPrivateInfo === undefined)
-		{
-			return;
-		}
-		if (window.zoteroEnabled) {
+		if (userPrivateInfo && window.zoteroEnabled) {
 			var apiKey = userPrivateInfo.ZoteroAPIKey;
 			if (apiKey !== undefined && !this.map.zotero) {
 				this.map.zotero = L.control.zotero(this.map);
@@ -1057,11 +1082,21 @@ L.Control.UIManager = L.Control.extend({
 				this.map.zotero.updateUserID();
 			}
 		}
-		if (window.documentSigningEnabled && this.notebookbar) {
-			const show = userPrivateInfo.SignatureCert && userPrivateInfo.SignatureKey;
-			// Show or hide the signature button on the notebookbar depending on if we
-			// have a signing cert/key specified.
-			this.showButton('signature', show);
+		if (window.documentSigningEnabled) {
+			if (userPrivateInfo && this.notebookbar) {
+				const show = userPrivateInfo.SignatureCert && userPrivateInfo.SignatureKey;
+				// Show or hide the signature button on the notebookbar depending on if we
+				// have a signing cert/key specified.
+				this.showButton('signature', show);
+			}
+			const serverPrivateInfo = myViewData.serverprivateinfo;
+			if (serverPrivateInfo) {
+				const baseUrl = serverPrivateInfo.ESignatureBaseUrl;
+				const clientId = serverPrivateInfo.ESignatureClientId;
+				if (baseUrl !== undefined && !this.map.eSignature) {
+					this.map.eSignature = L.control.eSignature(baseUrl, clientId);
+				}
+			}
 		}
 	},
 

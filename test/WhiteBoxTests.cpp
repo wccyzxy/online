@@ -15,6 +15,7 @@
 #include <cppunit/TestAssert.h>
 #include <cstddef>
 
+#include <common/Anonymizer.hpp>
 #include <Auth.hpp>
 #include <ChildSession.hpp>
 #include <Common.hpp>
@@ -136,9 +137,6 @@ void WhiteBoxTests::testCOOLProtocolFunctions()
 
     LOK_ASSERT(COOLProtocol::getTokenStringFromMessage(message, "bar", bar));
     LOK_ASSERT_EQUAL(std::string("hello-sailor"), bar);
-
-    LOK_ASSERT(COOLProtocol::getTokenKeywordFromMessage(message, "mumble", map, mumble));
-    LOK_ASSERT_EQUAL(2, mumble);
 
     LOK_ASSERT_EQUAL(static_cast<std::size_t>(1), Util::trimmed("A").size());
     LOK_ASSERT_EQUAL(std::string("A"), Util::trimmed("A"));
@@ -721,55 +719,57 @@ void WhiteBoxTests::testAnonymization()
                                        "secret.odt?access_token=Hn0zttjbwkvGWb5BHbDa5ArgTykJAyBl&"
                                        "access_token_ttl=0&permission=edit";
 
-    std::uint64_t nAnonymizationSalt = 1111111111182589933;
+    std::uint64_t anonymizationSalt = 1111111111182589933;
+    Anonymizer::initialize(true, anonymizationSalt);
 
-    LOK_ASSERT_EQUAL(std::string("#0#5e45aef91248a8aa#"),
-                         Util::anonymizeUrl(name, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(std::string("#0#5e45aef91248a8aa#"), Anonymizer::anonymizeUrl(name));
     LOK_ASSERT_EQUAL(std::string("#1#8f8d95bd2a202d00#.odt"),
-                         Util::anonymizeUrl(filenameTestx, nAnonymizationSalt));
+                     Anonymizer::anonymizeUrl(filenameTestx));
     LOK_ASSERT_EQUAL(std::string("/path/to/#2#5c872b2d82ecc8a0#.ext"),
-                         Util::anonymizeUrl(path, nAnonymizationSalt));
+                     Anonymizer::anonymizeUrl(path));
     LOK_ASSERT_EQUAL(
         std::string("http://localhost/owncloud/index.php/apps/richdocuments/wopi/files/"
                     "#3#22c6f0caad277666#?access_token=Hn0zttjbwkvGWb5BHbDa5ArgTykJAyBl&access_"
                     "token_ttl=0&permission=edit"),
-        Util::anonymizeUrl(plainUrl, nAnonymizationSalt));
+        Anonymizer::anonymizeUrl(plainUrl));
     LOK_ASSERT_EQUAL(
         std::string("http://localhost/owncloud/index.php/apps/richdocuments/wopi/files/"
                     "736_ocgdpzbkm39u/"
                     "#4#294f0dfb18f6a80b#.odt?access_token=Hn0zttjbwkvGWb5BHbDa5ArgTykJAyBl&access_"
                     "token_ttl=0&permission=edit"),
-        Util::anonymizeUrl(fileUrl, nAnonymizationSalt));
+        Anonymizer::anonymizeUrl(fileUrl));
 
-    nAnonymizationSalt = 0;
+    anonymizationSalt = 0;
+    Anonymizer::initialize(true, anonymizationSalt);
 
-    LOK_ASSERT_EQUAL(std::string("#0#5e45aef91248a8aa#"), Util::anonymizeUrl(name, nAnonymizationSalt));
-    Util::mapAnonymized(name, name);
-    LOK_ASSERT_EQUAL(name, Util::anonymizeUrl(name, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(std::string("#0#42027f9b6df09510#"), Anonymizer::anonymizeUrl(name));
+    Anonymizer::mapAnonymized(name, name);
+    LOK_ASSERT_EQUAL(name, Anonymizer::anonymizeUrl(name));
 
-    LOK_ASSERT_EQUAL(std::string("#2#5c872b2d82ecc8a0#.ext"),
-                         Util::anonymizeUrl(filename, nAnonymizationSalt));
-    Util::mapAnonymized("filename", "filename"); // Identity map of the filename without extension.
-    LOK_ASSERT_EQUAL(filename, Util::anonymizeUrl(filename, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(std::string("#1#366ab9ebe19ea09e#.ext"), Anonymizer::anonymizeUrl(filename));
+    Anonymizer::mapAnonymized("filename",
+                              "filename"); // Identity map of the filename without extension.
+    LOK_ASSERT_EQUAL(filename, Anonymizer::anonymizeUrl(filename));
 
-    LOK_ASSERT_EQUAL(std::string("#1#8f8d95bd2a202d00#.odt"),
-                         Util::anonymizeUrl(filenameTestx, nAnonymizationSalt));
-    Util::mapAnonymized("testx (6)",
-                        "testx (6)"); // Identity map of the filename without extension.
-    LOK_ASSERT_EQUAL(filenameTestx, Util::anonymizeUrl(filenameTestx, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(std::string("#2#eac31ed57854de54#.odt"),
+                     Anonymizer::anonymizeUrl(filenameTestx));
+    Anonymizer::mapAnonymized("testx (6)",
+                              "testx (6)"); // Identity map of the filename without extension.
+    LOK_ASSERT_EQUAL(filenameTestx, Anonymizer::anonymizeUrl(filenameTestx));
 
-    LOK_ASSERT_EQUAL(path, Util::anonymizeUrl(path, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(path, Anonymizer::anonymizeUrl(path));
 
-    const std::string urlAnonymized = Util::replace(plainUrl, "736_ocgdpzbkm39u", "#3#22c6f0caad277666#");
-    LOK_ASSERT_EQUAL(urlAnonymized, Util::anonymizeUrl(plainUrl, nAnonymizationSalt));
-    Util::mapAnonymized("736_ocgdpzbkm39u", "736_ocgdpzbkm39u");
-    LOK_ASSERT_EQUAL(plainUrl, Util::anonymizeUrl(plainUrl, nAnonymizationSalt));
+    const std::string urlAnonymized =
+        Util::replace(plainUrl, "736_ocgdpzbkm39u", "#3#f64fbe55134cd5f0#");
+    LOK_ASSERT_EQUAL(urlAnonymized, Anonymizer::anonymizeUrl(plainUrl));
+    Anonymizer::mapAnonymized("736_ocgdpzbkm39u", "736_ocgdpzbkm39u");
+    LOK_ASSERT_EQUAL(plainUrl, Anonymizer::anonymizeUrl(plainUrl));
 
-    const std::string urlAnonymized2 = Util::replace(fileUrl, "secret", "#4#294f0dfb18f6a80b#");
-    LOK_ASSERT_EQUAL(urlAnonymized2, Util::anonymizeUrl(fileUrl, nAnonymizationSalt));
-    Util::mapAnonymized("secret", "736_ocgdpzbkm39u");
+    const std::string urlAnonymized2 = Util::replace(fileUrl, "secret", "#4#dcac6c9cae1b3b95#");
+    LOK_ASSERT_EQUAL(urlAnonymized2, Anonymizer::anonymizeUrl(fileUrl));
+    Anonymizer::mapAnonymized("secret", "736_ocgdpzbkm39u");
     const std::string urlAnonymized3 = Util::replace(fileUrl, "secret", "736_ocgdpzbkm39u");
-    LOK_ASSERT_EQUAL(urlAnonymized3, Util::anonymizeUrl(fileUrl, nAnonymizationSalt));
+    LOK_ASSERT_EQUAL(urlAnonymized3, Anonymizer::anonymizeUrl(fileUrl));
 }
 
 void WhiteBoxTests::testIso8601Time()
@@ -1099,72 +1099,72 @@ void WhiteBoxTests::testParseUriUrl()
     std::string scheme = "***";
     std::string host = "***";
     std::string port = "***";
-    std::string url = "***";
+    std::string pathAndQuery = "***";
 
-    LOK_ASSERT(!net::parseUri(std::string(), scheme, host, port, url));
+    LOK_ASSERT(!net::parseUri(std::string(), scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT(host.empty());
     LOK_ASSERT(port.empty());
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("localhost", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("localhost", scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT_EQUAL(std::string("localhost"), host);
     LOK_ASSERT(port.empty());
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("127.0.0.1", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("127.0.0.1", scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT_EQUAL(std::string("127.0.0.1"), host);
     LOK_ASSERT(port.empty());
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("domain.com", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("domain.com", scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT(port.empty());
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("127.0.0.1:9999", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("127.0.0.1:9999", scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT_EQUAL(std::string("127.0.0.1"), host);
     LOK_ASSERT_EQUAL(std::string("9999"), port);
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("domain.com:88", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("domain.com:88", scheme, host, port, pathAndQuery));
     LOK_ASSERT(scheme.empty());
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT_EQUAL(std::string("88"), port);
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("http://domain.com", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("http://domain.com", scheme, host, port, pathAndQuery));
     LOK_ASSERT_EQUAL(std::string("http://"), scheme);
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT(port.empty());
-    LOK_ASSERT(url.empty());
+    LOK_ASSERT(pathAndQuery.empty());
 
-    LOK_ASSERT(net::parseUri("https://domain.com:88", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("https://domain.com:88", scheme, host, port, pathAndQuery));
     LOK_ASSERT_EQUAL(std::string("https://"), scheme);
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT_EQUAL(std::string("88"), port);
 
-    LOK_ASSERT(net::parseUri("http://domain.com/path/to/file", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("http://domain.com/path/to/file", scheme, host, port, pathAndQuery));
     LOK_ASSERT_EQUAL(std::string("http://"), scheme);
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT(port.empty());
-    LOK_ASSERT_EQUAL(std::string("/path/to/file"), url);
+    LOK_ASSERT_EQUAL(std::string("/path/to/file"), pathAndQuery);
 
-    LOK_ASSERT(net::parseUri("https://domain.com:88/path/to/file", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("https://domain.com:88/path/to/file", scheme, host, port, pathAndQuery));
     LOK_ASSERT_EQUAL(std::string("https://"), scheme);
     LOK_ASSERT_EQUAL(std::string("domain.com"), host);
     LOK_ASSERT_EQUAL(std::string("88"), port);
-    LOK_ASSERT_EQUAL(std::string("/path/to/file"), url);
+    LOK_ASSERT_EQUAL(std::string("/path/to/file"), pathAndQuery);
 
-    LOK_ASSERT(net::parseUri("wss://127.0.0.1:9999/", scheme, host, port, url));
+    LOK_ASSERT(net::parseUri("wss://127.0.0.1:9999/", scheme, host, port, pathAndQuery));
     LOK_ASSERT_EQUAL(std::string("wss://"), scheme);
     LOK_ASSERT_EQUAL(std::string("127.0.0.1"), host);
     LOK_ASSERT_EQUAL(std::string("9999"), port);
-    LOK_ASSERT_EQUAL(std::string("/"), url);
+    LOK_ASSERT_EQUAL(std::string("/"), pathAndQuery);
 }
 
 void WhiteBoxTests::testParseUrl()

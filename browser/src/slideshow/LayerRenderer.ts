@@ -24,17 +24,21 @@ interface LayerRenderer {
 		properties?: AnimatedElementRenderProperties,
 	): void;
 	dispose(): void;
+	isDisposed(): boolean;
 	fillColor(slideInfo: SlideInfo): boolean;
 	isGlRenderer(): boolean;
+	getRenderContext(): RenderContext;
 }
 
 class LayerRendererGl implements LayerRenderer {
 	private static readonly DefaultVertices = [-1, -1, 1, -1, -1, 1, 1, 1];
-
+	private static readonly DefaultFromColor = new Float32Array([0, 0, 0, 0]);
+	private static readonly DefaultToColor = new Float32Array([0, 0, 0, 0]);
 	private offscreenCanvas: OffscreenCanvas;
 	private glContext: RenderContextGl;
-	private gl: WebGLRenderingContext;
+	private gl: WebGL2RenderingContext;
 	private program: WebGLProgram;
+	private vao: WebGLVertexArrayObject;
 	private positionBuffer: WebGLBuffer;
 	private texCoordBuffer: WebGLBuffer;
 	private positionLocation: number;
@@ -43,12 +47,14 @@ class LayerRendererGl implements LayerRenderer {
 	private imageBitmapIdCounter = 0;
 	private textureCache: Map<string, WebGLTexture> = new Map();
 	private imageBitmapIdMap = new WeakMap<ImageBitmap, number>();
+	private disposed: boolean;
 
 	constructor(offscreenCanvas: OffscreenCanvas) {
 		this.offscreenCanvas = offscreenCanvas;
 		this.glContext = new RenderContextGl(this.offscreenCanvas);
 		this.gl = this.glContext.getGl();
 		this.initializeWebGL();
+		this.disposed = false;
 	}
 
 	initialize(): void {
@@ -57,6 +63,14 @@ class LayerRendererGl implements LayerRenderer {
 
 	isGlRenderer(): boolean {
 		return true;
+	}
+
+	isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	public getRenderContext(): RenderContextGl {
+		return this.glContext;
 	}
 
 	private vertexShaderSource = `
@@ -71,11 +85,20 @@ class LayerRendererGl implements LayerRenderer {
 
 	private fragmentShaderSource = `
 		precision mediump float;
+		uniform vec4 fromFillColor;
+		uniform vec4 toFillColor;
+		uniform vec4 fromLineColor;
+		uniform vec4 toLineColor;
 		uniform float alpha;
 		varying vec2 v_texCoord;
 		uniform sampler2D u_sampler;
+
+		${GlHelpers.nearestPointOnSegment}
+		${GlHelpers.computeColor}
+
 		void main() {
 			vec4 color = texture2D(u_sampler, v_texCoord);
+			color = computeColor(color);
 			color = color * alpha;
 			gl_FragColor = color;
 		}
@@ -107,6 +130,9 @@ class LayerRendererGl implements LayerRenderer {
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
 		const texCoords = new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]);
 		gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+
+		this.vao = gl.createVertexArray();
+		gl.bindVertexArray(this.vao);
 
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
 		gl.enableVertexAttribArray(this.positionLocation);
@@ -144,25 +170,46 @@ class LayerRendererGl implements LayerRenderer {
 	}
 
 	clearCanvas(): void {
-		const gl = this.gl;
-		gl.clearColor(1.0, 1.0, 1.0, 1.0); // Clear to white
-		gl.clear(gl.COLOR_BUFFER_BIT);
+		if (!this.disposed) {
+			const gl = this.gl;
+			gl.clearColor(1.0, 1.0, 1.0, 1.0); // Clear to white
+			gl.clear(gl.COLOR_BUFFER_BIT);
+		}
 	}
 
 	drawBitmap(
 		imageInfo: ImageInfo | ImageBitmap,
 		properties?: AnimatedElementRenderProperties,
 	): void {
+		if (this.disposed) {
+			console.log('LayerRenderer is disposed');
+			return;
+		}
 		if (!imageInfo) {
-			console.log('LayerDrawing.drawBitmap: no image');
+			console.log('LayerRenderer.drawBitmap: no image');
 			return;
 		}
 
 		let bounds: BoundsType = null;
 		let alpha = 1.0;
+		let fromFillColor = LayerRendererGl.DefaultFromColor;
+		let toFillColor = LayerRendererGl.DefaultToColor;
+		let fromLineColor = LayerRendererGl.DefaultFromColor;
+		let toLineColor = LayerRendererGl.DefaultToColor;
 		if (properties) {
 			bounds = properties.bounds;
 			alpha = properties.alpha;
+			const colorMap = properties.colorMap;
+			if (colorMap) {
+				if (colorMap.fromFillColor && colorMap.toFillColor) {
+					fromFillColor = colorMap.fromFillColor.toFloat32Array();
+					toFillColor = colorMap.toFillColor.toFloat32Array();
+				}
+				if (colorMap.fromLineColor && colorMap.toLineColor) {
+					fromLineColor = colorMap.fromLineColor.toFloat32Array();
+					toLineColor = colorMap.toLineColor.toFloat32Array();
+				}
+			}
 		}
 
 		let texture: WebGLTexture;
@@ -192,9 +239,27 @@ class LayerRendererGl implements LayerRenderer {
 		}
 
 		this.gl.useProgram(this.program);
+		this.gl.bindVertexArray(this.vao);
 
 		this.initPositionBuffer(bounds);
+
 		this.gl.uniform1f(this.gl.getUniformLocation(this.program, 'alpha'), alpha);
+		this.gl.uniform4fv(
+			this.gl.getUniformLocation(this.program, 'fromFillColor'),
+			fromFillColor,
+		);
+		this.gl.uniform4fv(
+			this.gl.getUniformLocation(this.program, 'toFillColor'),
+			toFillColor,
+		);
+		this.gl.uniform4fv(
+			this.gl.getUniformLocation(this.program, 'fromLineColor'),
+			fromLineColor,
+		);
+		this.gl.uniform4fv(
+			this.gl.getUniformLocation(this.program, 'toLineColor'),
+			toLineColor,
+		);
 
 		this.gl.activeTexture(this.gl.TEXTURE0);
 		this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
@@ -206,6 +271,7 @@ class LayerRendererGl implements LayerRenderer {
 	dispose(): void {
 		this.gl = null;
 		this.offscreenCanvas = null;
+		this.disposed = true;
 	}
 
 	hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -228,6 +294,8 @@ class LayerRendererGl implements LayerRenderer {
 	}
 
 	fillColor(slideInfo: SlideInfo): boolean {
+		if (this.disposed) return true; // done
+
 		if (slideInfo.background && slideInfo.background.fillColor) {
 			const fillColor = slideInfo.background.fillColor;
 			const rgb = this.hexToRgb(fillColor);
@@ -250,13 +318,17 @@ class LayerRendererGl implements LayerRenderer {
 class LayerRenderer2d implements LayerRenderer {
 	private offscreenCanvas: OffscreenCanvas;
 	private offscreenContext: OffscreenCanvasRenderingContext2D;
+	private context2d: RenderContext2d;
+	private disposed: boolean;
 
 	constructor(offscreenCanvas: OffscreenCanvas) {
 		this.offscreenCanvas = offscreenCanvas;
-		this.offscreenContext = this.offscreenCanvas.getContext('2d');
+		this.context2d = new RenderContext2d(this.offscreenCanvas);
+		this.offscreenContext = this.context2d.get2dOffscreen();
 		if (!this.offscreenContext) {
 			throw new Error('2D Canvas context not available');
 		}
+		this.disposed = false;
 	}
 
 	initialize(): void {
@@ -267,7 +339,16 @@ class LayerRenderer2d implements LayerRenderer {
 		return false;
 	}
 
+	isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	getRenderContext(): RenderContext {
+		return this.context2d;
+	}
+
 	clearCanvas(): void {
+		if (this.disposed) return;
 		this.offscreenContext.clearRect(
 			0,
 			0,
@@ -287,6 +368,7 @@ class LayerRenderer2d implements LayerRenderer {
 		imageInfo: ImageInfo | ImageBitmap,
 		properties?: AnimatedElementRenderProperties,
 	): void {
+		if (this.disposed) return;
 		if (!imageInfo) {
 			console.log('Canvas2DRenderer.drawBitmap: no image');
 			return;
@@ -300,11 +382,14 @@ class LayerRenderer2d implements LayerRenderer {
 
 	dispose(): void {
 		// Cleanup references
+		this.disposed = true;
 		this.offscreenContext = null;
 		this.offscreenCanvas = null;
 	}
 
 	fillColor(slideInfo: SlideInfo): boolean {
+		if (this.disposed) return;
+
 		// always draw a solid white rectangle behind the background
 		this.offscreenContext.fillStyle = '#FFFFFF';
 		this.offscreenContext.fillRect(

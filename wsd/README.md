@@ -6,19 +6,14 @@ Collabora Online WebSocket server has the following dependencies:
 
 - libpng
 - Poco library: https://pocoproject.org/
+- OpenSSL (when configured with --enable-ssl)
+- libzstd
 - libcap-dev (Debian/Ubuntu) / libcap-progs (SUSE/openSUSE) / libcap-devel (RedHat/CentOS)
 - libpam-dev (Debian/Ubuntu) / pam-devel (RedHat/CentOS/SUSE/openSUSE)
 
 If your Linux distro doesn't provide a Poco package (versions 1.7.5 and
 newer should work), you can build it yourself and install in a
 location of your choice.
-
-On openSUSE Leap 15.1, you can use:
-
-    zypper ar http://download.opensuse.org/repositories/devel:/libraries:/c_c++/openSUSE_Leap_15.1/devel:libraries:c_c++.repo
-    zypper in poco-devel libcap-progs python3-polib libcap-devel npm
-
-Similar repos exist for other openSUSE and SLE releases.
 
 ## Building
 
@@ -44,15 +39,6 @@ If you have self-built Poco, add the following to ./configure:
     --with-poco-includes=<POCOINST>/include --with-poco-libs=<POCOINST>/lib
 
 where <POCOINST> means the Poco installation location.
-
-If you have the Poco debugging libraries (eg. you have a self-built
-Poco), you can add --enable-debug to the configure options for
-additional debugging.
-
-For Windows, a proper VS2013 project is needed.
-
-There is still unconditional debugging output etc. This is a work in
-progress.
 
 ## Running
 
@@ -122,7 +108,7 @@ to replace those with your own files.
 To generate the new self-signed certificate, you can do the following. Maybe
 there is a less verbose way, but this worked for me:
 
-    # create tha ca-chain.cert.pem
+    # create the ca-chain.cert.pem
 
     mkdir private
 
@@ -221,9 +207,9 @@ interested in. Note that simply attaching gdb via `gdb -p` is not meant to work,
 - `sudo gdb -p <PID>`, which is easy to remember or
 
 - `gdb -iex "set sysroot /" -p <PID>`, which can run as an unprivileged user, since we switched from
-  capabilities to unpriviliged namespaces.
+  capabilities to unprivileged namespaces.
 
-You can make tha later an alias as well:
+You can make the later an alias as well:
 
 ```
 alias cool-gdb='gdb -iex "set sysroot /"'
@@ -348,61 +334,3 @@ chain of events.
 - Kit loads the document and sets up callbacks with LOKit.
 - MasterProcessSession (ToClient) and MasterProcessSession (ToPrisoner)
   tunnel the traffic between client and Kit both ways.
-
-## Coding style
-
-There is not really any serious rationale why the code ended up being
-written in the style it is... but unless you plan to change some style
-detail completely and consistently all over, please keep to the style
-of the existing code when editing.
-
-The style is roughly as follows, in rough order of importance:
-
-- As in LO, no hard TABs in source files. Only spaces. Indentation
-  step is four columns.
-
-- As in LO, the braces { and } of the block of if, switch, and while
-  statements go on separate lines.
-
-- Following Poco conventions, non-static member variables are prefixed
-  with an underscore. Static members have a CamelCase name.
-
-- Do use C++11. I admit in some places (out of laziness or ignorance)
-  I use Poco API even if there probably is an equivalent std::
-  API. (Like for threads.) Feel free to change those, if the std:: API
-  is not much more verbose or ugly, and you are sure it is equivalent.
-
-- Always prefer the C++ wrapped version of a C library
-  API. I.e. include <cstring> instead of <string.h>, use std::memcpy()
-  instead of memcpy(), etc.
-
-- Use std:: prefix for all std API, i.e. don't ever do "using
-  std;". But it's OK to use "using Poco::Foo;" all over. Maybe that is
-  not a good idea? But please no "using" in headers.
-
-- Member functions use camelCaseWithInitialLowerCase. I don't like
-  CamelCaseWithInitialUpperCase.
-
-- [ No kind of Hungarian prefixes. ]
-
-- return - is not a function; but a statement - it doesn't need extra ()
-
-- Use 'auto' in the following cases only:
-
-  - iterators
-
-  - range-based for loops
-
-  - the type is spelled out in the same line already (e.g. initializing from a
-    cast or a function that has a single type parameter)
-
-  In other cases it makes the code more readable to still spell out the type
-  explicitly.
-
-Security credential related changes
------------------------------------
-
-- Instead of the usual one, two reviews are needed.
-
-- Instead of just choosing the 'approve' option on GitHub, please add your
-  explicit sign-off to the commit message when you review.

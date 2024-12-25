@@ -13,9 +13,11 @@
 
 #pragma once
 
-#include "COOLWSD.hpp"
-#include "Log.hpp"
 #include <common/Authorization.hpp>
+#include <common/Common.hpp>
+#include <common/ConfigUtil.hpp>
+#include <common/Log.hpp>
+#include <wsd/COOLWSD.hpp>
 
 #include <Poco/URI.h>
 
@@ -337,19 +339,19 @@ public:
 
     const Poco::URI& getUri() const { return _uri; }
 
-    const std::string& getJailPath() const { return _jailPath; };
+    const std::string& getJailPath() const { return _jailPath; }
 
     /// Returns the root path to the jailed file.
-    const std::string& getRootFilePath() const { return _jailedFilePath; };
+    const std::string& getRootFilePath() const { return _jailedFilePath; }
 
     /// Returns the root path to the jailed file to be uploaded.
-    std::string getRootFilePathToUpload() const { return _jailedFilePath + TO_UPLOAD_SUFFIX; };
+    std::string getRootFilePathToUpload() const { return _jailedFilePath + TO_UPLOAD_SUFFIX; }
 
     /// Returns the root path to the jailed file being uploaded.
     std::string getRootFilePathUploading() const
     {
         return _jailedFilePath + TO_UPLOAD_SUFFIX + UPLOADING_SUFFIX;
-    };
+    }
 
     /// Set the root path of the jailed file, only for use in cases where we actually have converted
     /// it to another format, in the same directory
@@ -359,7 +361,7 @@ public:
         _jailedFilePath = newPath;
     }
 
-    const std::string& getRootFilePathAnonym() const { return _jailedFilePathAnonym; };
+    const std::string& getRootFilePathAnonym() const { return _jailedFilePathAnonym; }
 
     void setRootFilePathAnonym(const std::string& newPath)
     {
@@ -586,7 +588,7 @@ public:
     LockContext()
         : _supportsLocks(false)
         , _lockState(StorageBase::LockState::UNLOCK)
-        , _refreshSeconds(COOLWSD::getConfigValue<int>("storage.wopi.locking.refresh", 900))
+        , _refreshSeconds(ConfigUtil::getConfigValue<int>("storage.wopi.locking.refresh", 900))
     {
     }
 

@@ -13,12 +13,12 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
 
-#include <stdlib.h>
 #include <Log.hpp>
 #include <Common.hpp>
 #include <Protocol.hpp>
@@ -73,7 +73,7 @@ struct ClipboardData
             {
                 uint64_t len = strtoll( hexLen.c_str(), nullptr, 16 );
                 std::string content(len, ' ');
-                inStream.read(&content[0], len);
+                inStream.read(content.data(), len);
                 if (inStream.fail())
                     throw ParseError("error during reading the stream");
                 std::getline(inStream, newline, '\n');
@@ -135,7 +135,7 @@ public:
 
     void dumpState(std::ostream& os) const
     {
-        os << "Saved clipboards: " << _cache.size() << "\n";
+        os << "Saved clipboards: " << _cache.size() << '\n';
         auto now = std::chrono::steady_clock::now();
         for (auto &it : _cache)
         {

@@ -360,7 +360,7 @@ L.Map.include({
 		if ((command.startsWith('.uno:Sidebar') && !command.startsWith('.uno:SidebarShow')) ||
 			command.startsWith('.uno:SlideChangeWindow') || command.startsWith('.uno:CustomAnimation') ||
 			command.startsWith('.uno:MasterSlidesPanel') || command.startsWith('.uno:ModifyPage') ||
-			command.startsWith('.uno:Navigator')) {
+			command.startsWith('.uno:Navigator') || command.startsWith('.uno:SidebarDeck')) {
 
 			// sidebar control is present only in desktop/tablet case
 			if (this.sidebar) {
@@ -378,7 +378,7 @@ L.Map.include({
 
 		var isAllowedInReadOnly = false;
 		var allowedCommands = ['.uno:Save', '.uno:WordCountDialog',
-			'.uno:Signature', '.uno:ShowResolvedAnnotations',
+			'.uno:Signature', '.uno:PrepareSignature', '.uno:DownloadSignature', '.uno:ShowResolvedAnnotations',
 			'.uno:ToolbarMode?Mode:string=notebookbar_online.ui', '.uno:ToolbarMode?Mode:string=Default',
 			'.uno:ExportToEPUB', '.uno:ExportToPDF', '.uno:ExportDirectToPDF', '.uno:MoveKeepInsertMode', '.uno:ShowRuler'];
 		if (app.isCommentEditingAllowed()) {
@@ -439,8 +439,8 @@ L.Map.include({
 		this.fire('insertmultimedia', {file: file});
 	},
 
-	insertURL: function (url) {
-		this.fire('inserturl', {url: url});
+	insertURL: function (url, urltype) {
+		this.fire('inserturl', {url: url, urltype: urltype});
 	},
 
 	selectBackground: function (file) {

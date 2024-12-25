@@ -34,9 +34,8 @@ function setupDocument(filePath, copyCertificates = false) {
 
 		copyFile(filePath, newFilePath);
 		if (copyCertificates) {
-			for (const suffix of ['.cert.pem', '.key.pem', '.ca.pem']) {
-				copyFile(filePath + suffix, newFilePath + suffix);
-			}
+			const suffix = '.wopi.json';
+			copyFile(filePath + suffix, newFilePath + suffix);
 		}
 	}
 
@@ -609,61 +608,79 @@ function initAliasToNegative(aliasName) {
 
 // Run a code snippet if we are inside Calc.
 function doIfInCalc(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-		if (doc.hasClass('spreadsheet-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfInCalc - start');
+		if (bodyElm.get('data-doctype') == 'spreadhsheet') {
+			cy.log('<< doIfInCalc - TRUE');
 			callback();
 		}
+		cy.log('<< doIfInCalc - FALSE');
 	});
 }
 
 // Run a code snippet if we are *NOT* inside Calc.
 function doIfNotInCalc(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-			if (!doc.hasClass('spreadsheet-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfNotInCalc - start');
+			if (bodyElm.get('data-doctype') !== 'spreadhsheet') {
+				cy.log('<< doIfNotInCalc - TRUE');
 				callback();
 			}
+		cy.log('<< doIfNotInCalc - FALSE');
 		});
 }
 
 // Run a code snippet if we are inside Impress.
 function doIfInImpress(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-			if (doc.hasClass('presentation-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfInImpress - start');
+		if (bodyElm.get('data-doctype') == 'presentation') {
+				cy.log('<< doIfInImpress - TRUE');
 				callback();
 			}
+		cy.log('<< doIfInImpress - FALSE');
 		});
 }
 
 // Run a code snippet if we are *NOT* inside Impress.
 function doIfNotInImpress(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-			if (!doc.hasClass('presentation-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfNotInImpress - start');
+			if (bodyElm.get('data-doctype') !== 'presentation') {
+				cy.log('<< doIfNotInImpress - TRUE');
 				callback();
 			}
+		cy.log('<< doIfNotInImpress - FALSE');
 		});
 }
 
 // Run a code snippet if we are inside Writer.
 function doIfInWriter(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-			if (doc.hasClass('text-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfInWriter - start');
+		if (bodyElm.get('data-doctype') == 'text') {
+				cy.log('<< doIfInWriter - TRUE');
 				callback();
 			}
+		cy.log('<< doIfInWriter - FALSE');
 		});
 }
 
 // Run a code snippet if we are *NOT* inside Writer.
 function doIfNotInWriter(callback) {
-	cy.cframe().find('#document-container', {log: false})
-		.then(function(doc) {
-			if (!doc.hasClass('text-doctype')) {
+	cy.cframe().find('body', {log: false})
+		.then(function(bodyElm) {
+		cy.log('>> doIfNotInWriter - start');
+			if (bodyElm.get('data-doctype') !== 'text') {
+				cy.log('<< doIfNotInWriter - TRUE');
 				callback();
 			}
+		cy.log('<< doIfNotInWriter - FALSE');
 		});
 }
 
@@ -1052,10 +1069,13 @@ function typeIntoInputField(selector, text, clearBefore = true)
 	cy.log('>> typeIntoInputField - start');
 
 	cy.cGet(selector).as('input');
+	cy.get('@input').focus();
+	cy.get('@input').should('have.focus');
 	if (clearBefore) {
-		cy.get('@input').focus();
-		cy.get('@input').clear();
+		cy.get('@input').invoke('val', '');
+		cy.get('@input').should('have.value', '');
 	}
+
 	cy.get('@input').type(text + '{enter}');
 	cy.get('@input').should('have.value', text);
 

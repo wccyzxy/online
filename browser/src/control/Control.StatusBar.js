@@ -170,6 +170,16 @@ class StatusBar extends JSDialog.Toolbar {
 		this.updateHtmlItem('StatePageNumber', state ? state : ' ');
 	}
 
+	onShowCommentsChange(e) {
+		var state = e.state;
+		var statemsg;
+		if (state === 'true')
+			statemsg = _UNO('.uno:ShowAnnotations') +': ' + _('On');
+		else if (state === 'false')
+			statemsg = _UNO('.uno:ShowAnnotations') +': ' + _('Off');
+		this.updateHtmlItem('ShowComments', state ? statemsg : ' ');
+	}
+
 	_generateHtmlItem(id) {
 		var isReadOnlyMode = app.map ? app.map.isReadOnlyMode() : true;
 		var canUserWrite = !app.isReadOnly();
@@ -237,6 +247,7 @@ class StatusBar extends JSDialog.Toolbar {
 			this._generateHtmlItem('statepagenumber'), 					// text
 			this._generateHtmlItem('statewordcount'), 					// text
 			this._generateHtmlItem('insertmode'),						// spreadsheet, text
+			this._generateHtmlItem('showcomments'),					    // text
 			this._generateHtmlItem('statusselectionmode'),				// text
 			this._generateHtmlItem('slidestatus'),						// presentation
 			this._generateHtmlItem('pagestatus'),						// drawing
@@ -312,6 +323,7 @@ class StatusBar extends JSDialog.Toolbar {
 				this.showItem('languagestatus', !app.map.isReadOnlyMode());
 				this.showItem('languagestatusbreak', !app.map.isReadOnlyMode());
 				this.showItem('permissionmode-container', true);
+				this.showItem('showcomments-container', true);
 				this.showItem('documentstatus-container', true);
 			}
 			break;
@@ -389,14 +401,14 @@ class StatusBar extends JSDialog.Toolbar {
 		}
 
 		var canUserWrite = window.ThisIsAMobileApp ? !app.isReadOnly() : this.map['wopi'].UserCanWrite;
-		var EditDocMode = true;
+		var NotEditDocMode = false;
 		if (app.map['stateChangeHandler'].getItemValue('EditDoc') !== undefined) {
-			EditDocMode = app.map['stateChangeHandler'].getItemValue('EditDoc') === "true";
-			if (!EditDocMode)
+			NotEditDocMode = app.map['stateChangeHandler'].getItemValue('EditDoc') === "false"; // can be true, false or disabled
+			if (NotEditDocMode)
 				app.map.uiManager.showSnackbar(_('To prevent accidental changes, the author has set this file to open as view-only'));
 		}
 
-		canUserWrite = canUserWrite && EditDocMode;
+		canUserWrite = canUserWrite && !NotEditDocMode;
 
 		var permissionContainer = document.getElementById('permissionmode-container');
 		if (permissionContainer) {
@@ -477,6 +489,10 @@ class StatusBar extends JSDialog.Toolbar {
 			this.onPageChange(e);
 			return;
 		}
+		else if (commandName === 'showannotations') {
+			this.onShowCommentsChange(e);
+			return;
+		}
 		else if (commandName === '.uno:StateWordCount') {
 			state = this.toLocalePattern('%1 words, %2 characters', '([\\d,]+) words, ([\\d,]+) characters', state, '%1', '%2');
 			this.updateHtmlItem('StateWordCount', state ? state : ' ');
@@ -491,7 +507,7 @@ class StatusBar extends JSDialog.Toolbar {
 			}
 		}
 		else if (commandName === '.uno:EditDoc') {
-			state = state === "true";
+			state = state !== "false";
 			this.onPermissionChanged({detail : {
 				perm: state && this.map.isEditMode() ? "edit" : "readonly"
 			} });

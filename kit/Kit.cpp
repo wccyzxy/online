@@ -15,6 +15,9 @@
 
 #include <config.h>
 
+#include <common/Anonymizer.hpp>
+
+#include <csignal>
 #include <dlfcn.h>
 #include <limits>
 #ifdef __linux__
@@ -40,18 +43,17 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <climits>
 #include <condition_variable>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <memory>
-#include <string>
-#include <sstream>
-#include <thread>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
 
 #define LOK_USE_UNSTABLE_API
 #include <LibreOfficeKit/LibreOfficeKitInit.h>
@@ -68,7 +70,6 @@
 #include <common/JsonUtil.hpp>
 #include "KitHelper.hpp"
 #include "Kit.hpp"
-#include <NetUtil.hpp>
 #include <Protocol.hpp>
 #include <Log.hpp>
 #include <Png.hpp>
@@ -77,10 +78,8 @@
 #include <UserMessages.hpp>
 #include <Util.hpp>
 #include <JsonUtil.hpp>
-#include "Watermark.hpp"
 #include "RenderTiles.hpp"
 #include "KitWebSocket.hpp"
-#include "SetupKitEnvironment.hpp"
 #include <common/ConfigUtil.hpp>
 #include <common/TraceEvent.hpp>
 #include <common/Watchdog.hpp>
@@ -95,20 +94,19 @@
 
 #if MOBILEAPP
 #include "COOLWSD.hpp"
+#ifndef IOS
+#include "SetupKitEnvironment.hpp"
+#endif
 #endif
 
 #ifdef IOS
 #include "ios.h"
 #endif
 
-#define LIB_SOFFICEAPP  "lib" "sofficeapp" ".so"
-#define LIB_MERGED      "lib" "mergedlo" ".so"
-
 using Poco::Exception;
 using Poco::File;
 using Poco::JSON::Object;
 using Poco::JSON::Parser;
-using Poco::URI;
 
 #ifndef BUILDING_TESTS
 using Poco::Path;
@@ -143,11 +141,6 @@ _LibreOfficeKit* loKitPtr = nullptr;
 /// flush sockets with a 'processtoidle' -> 'idle' reply.
 static std::chrono::steady_clock::time_point ProcessToIdleDeadline;
 
-#ifndef BUILDING_TESTS
-static bool AnonymizeUserData = false;
-static uint64_t AnonymizationSalt = 82589933;
-#endif
-
 static bool EnableWebsocketURP = false;
 static int URPStartCount = 0;
 
@@ -176,7 +169,58 @@ static int URPfromLoFDs[2] { -1, -1 };
 // socket buffer & event processing in a single, thread.
 bool pushToMainThread(LibreOfficeKitCallback cb, int type, const char *p, void *data);
 
+[[maybe_unused]]
 static LokHookFunction2* initFunction = nullptr;
+
+class BackgroundSaveWatchdog
+{
+public:
+    BackgroundSaveWatchdog(unsigned mobileAppDocId)
+        : _saveCompleted(false)
+        , _watchdogThread(
+            // mobileAppDocId is on the stack, so capture it by value.
+              [mobileAppDocId, this]()
+              {
+                  Util::setThreadName("kitbgsv_" + Util::encodeId(mobileAppDocId, 3) + "_wdg");
+
+                  const auto timeout = std::chrono::seconds(
+                      ConfigUtil::getInt("per_document.bgsave_timeout_secs", 60));
+
+                  std::unique_lock<std::mutex> lock(_watchdogMutex);
+
+                  LOG_TRC("Starting bgsave watchdog with " << timeout << " timeout");
+                  if (_watchdogCV.wait_for(lock, timeout,
+                                           [this]() { return _saveCompleted.load(); }))
+                  {
+                      // Done!
+                      LOG_TRC("BgSave finished in time");
+                  }
+                  else
+                  {
+                      // Failed!
+                      LOG_WRN("BgSave timed out and will self-destroy");
+                      Log::shutdown(); // Flush logs.
+                      // raise(3) will exit the current thread, not the process.
+                      ::kill(0, SIGKILL); // kill(2) is trapped by seccomp.
+                  }
+              })
+    {
+    }
+
+    void complete()
+    {
+        _saveCompleted = true;
+        _watchdogCV.notify_all();
+    }
+
+private:
+    std::atomic_bool _saveCompleted; ///< Defend against spurious wakes.
+    std::thread _watchdogThread;
+    std::condition_variable _watchdogCV;
+    std::mutex _watchdogMutex;
+};
+
+static std::unique_ptr<BackgroundSaveWatchdog> BgSaveWatchdog;
 
 namespace
 {
@@ -195,6 +239,7 @@ namespace
         return decoded.substr(7);
     }
 
+    [[maybe_unused]]
     void consistencyCheckFileExists(const std::string &uri)
     {
         std::string path = pathFromFileURL(uri);
@@ -307,16 +352,11 @@ namespace
             if (!strcmp(dot, ".so"))
             {
                 // NSS is problematic ...
-                if (strstr(path, "libnspr4") ||
-                    strstr(path, "libplds4") ||
-                    strstr(path, "libplc4") ||
-                    strstr(path, "libnss3") ||
-                    strstr(path, "libnssckbi") ||
-                    strstr(path, "libnsutil3") ||
-                    strstr(path, "libssl3") ||
-                    strstr(path, "libsoftokn3") ||
-                    strstr(path, "libsqlite3") ||
-                    strstr(path, "libfreeblpriv3"))
+                if (strstr(path, "libnspr4") || strstr(path, "libplds4") ||
+                    strstr(path, "libplc4") || strstr(path, "libnss3") ||
+                    strstr(path, "libnssckbi") || strstr(path, "libnsutil3") ||
+                    strstr(path, "libssl3") || strstr(path, "libsoftokn3") ||
+                    strstr(path, "libsqlite3") || strstr(path, "libfreeblpriv3"))
                     return true;
 
                 // As is Python ...
@@ -558,18 +598,20 @@ namespace
     int linkGCDAFilesFunction(const char* fpath, const struct stat*, int typeflag,
                               struct FTW* /*ftwbuf*/)
     {
-        if (strcmp(fpath, sourceForGCDAFiles.c_str()) == 0)
+        const std::string path = fpath;
+        if (path == sourceForGCDAFiles)
         {
             LOG_TRC("nftw: Skipping redundant path: " << fpath);
             return FTW_CONTINUE;
         }
 
-        if (fpath.starts_with(childRootForGCDAFiles))
+        if (path.starts_with(childRootForGCDAFiles))
         {
             LOG_TRC("nftw: Skipping childRoot subtree: " << fpath);
             return FTW_SKIP_SUBTREE;
         }
 
+        assert(path.size() >= sourceForGCDAFiles.size());
         assert(fpath[strlen(sourceForGCDAFiles.c_str())] == '/');
         const char* relativeOldPath = fpath + strlen(sourceForGCDAFiles.c_str()) + 1;
         const Poco::Path newPath(destForGCDAFiles, Poco::Path(relativeOldPath));
@@ -698,7 +740,7 @@ Document::Document(const std::shared_ptr<lok::Office>& loKit, const std::string&
     , _docId(docId)
     , _url(url)
     , _obfuscatedFileId(Uri::getFilenameFromURL(docKey))
-    , _queue(std::make_shared<KitQueue>())
+    , _queue(new KitQueue(*this))
     , _websocketHandler(websocketHandler)
     , _modified(ModifiedState::UnModified)
     , _isBgSaveProcess(false)
@@ -722,6 +764,11 @@ Document::Document(const std::shared_ptr<lok::Office>& loKit, const std::string&
     assert(singletonDocument == nullptr);
     singletonDocument = this;
 #endif
+    // Open file for UI Logging
+    if (Log::isLogUIEnabled())
+    {
+        logUiCmd.createTmpFile(_docId);
+    }
 }
 
 Document::~Document()
@@ -1016,7 +1063,7 @@ void Document::trimAfterInactivity()
         return;
 
     // unusual LOK event from another thread,
-    // pData - is Document with process' lifetime.
+    // data - is Document with process' lifetime.
     if (pushToMainThread(GlobalCallback, type, p, data))
         return;
 
@@ -1082,7 +1129,7 @@ void Document::trimAfterInactivity()
         return;
 
     // unusual LOK event from another thread.
-    // pData - is CallbackDescriptors which share process' lifetime.
+    // data - is CallbackDescriptors which share process' lifetime.
     if (pushToMainThread(ViewCallback, type, p, data))
         return;
 
@@ -1090,7 +1137,7 @@ void Document::trimAfterInactivity()
     assert(descriptor && "Null callback data.");
     assert(descriptor->getDoc() && "Null Document instance.");
 
-    std::shared_ptr<KitQueue> queue = descriptor->getDoc()->_queue;
+    std::unique_ptr<KitQueue> &queue = descriptor->getDoc()->_queue;
     assert(queue && "Null KitQueue.");
 
     const std::string payload = p ? p : "(nil)";
@@ -1098,63 +1145,7 @@ void Document::trimAfterInactivity()
             "] [" << lokCallbackTypeToString(type) <<
             "] [" << payload << "].");
 
-    // when we examine the content of the JSON
-    std::string targetViewId;
-
-    if (type == LOK_CALLBACK_CELL_CURSOR)
-    {
-        StringVector tokens(StringVector::tokenize(payload, ','));
-        // Payload may be 'EMPTY'.
-        if (tokens.size() == 4)
-        {
-            int cursorX = std::stoi(tokens[0]);
-            int cursorY = std::stoi(tokens[1]);
-            int cursorWidth = std::stoi(tokens[2]);
-            int cursorHeight = std::stoi(tokens[3]);
-
-            queue->updateCursorPosition(0, 0, cursorX, cursorY, cursorWidth, cursorHeight);
-        }
-    }
-    else if (type == LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR)
-    {
-        Poco::JSON::Parser parser;
-        const Poco::Dynamic::Var result = parser.parse(payload);
-        const auto& command = result.extract<Poco::JSON::Object::Ptr>();
-        std::string rectangle = command->get("rectangle").toString();
-        StringVector tokens(StringVector::tokenize(rectangle, ','));
-        // Payload may be 'EMPTY'.
-        if (tokens.size() == 4)
-        {
-            int cursorX = std::stoi(tokens[0]);
-            int cursorY = std::stoi(tokens[1]);
-            int cursorWidth = std::stoi(tokens[2]);
-            int cursorHeight = std::stoi(tokens[3]);
-
-            queue->updateCursorPosition(0, 0, cursorX, cursorY, cursorWidth, cursorHeight);
-        }
-    }
-    else if (type == LOK_CALLBACK_INVALIDATE_VIEW_CURSOR ||
-             type == LOK_CALLBACK_CELL_VIEW_CURSOR)
-    {
-        Poco::JSON::Parser parser;
-        const Poco::Dynamic::Var result = parser.parse(payload);
-        const auto& command = result.extract<Poco::JSON::Object::Ptr>();
-        targetViewId = command->get("viewId").toString();
-        std::string part = command->get("part").toString();
-        std::string text = command->get("rectangle").toString();
-        StringVector tokens(StringVector::tokenize(text, ','));
-        // Payload may be 'EMPTY'.
-        if (tokens.size() == 4)
-        {
-            int cursorX = std::stoi(tokens[0]);
-            int cursorY = std::stoi(tokens[1]);
-            int cursorWidth = std::stoi(tokens[2]);
-            int cursorHeight = std::stoi(tokens[3]);
-
-            queue->updateCursorPosition(std::stoi(targetViewId), std::stoi(part), cursorX, cursorY, cursorWidth, cursorHeight);
-        }
-    }
-    else if (type == LOK_CALLBACK_DOCUMENT_PASSWORD_RESET)
+    if (type == LOK_CALLBACK_DOCUMENT_PASSWORD_RESET)
     {
         Document* document = dynamic_cast<Document*>(descriptor->getDoc());
         Poco::JSON::Object::Ptr object;
@@ -1178,8 +1169,11 @@ void Document::trimAfterInactivity()
             std::shared_ptr<ChildSession> session = document->findSessionByViewId(descriptor->getViewId());
             if (session)
             {
-                session->setViewRenderState(payload);
-                document->invalidateCanonicalId(session->getId());
+                if (!payload.empty())
+                {
+                    session->setViewRenderState(payload);
+                    document->invalidateCanonicalId(session->getId());
+                }
             }
             else
             {
@@ -1280,12 +1274,17 @@ void Document::onUnload(const ChildSession& session)
         LOG_INF("Document [" << anonymizeUrl(_url) << "] has no more sessions" << msg.str()
                              << "; exiting bluntly");
 
+        // Save UI log from kit to a permanent place
+        if (Log::isLogUIEnabled())
+        {
+            logUiCmd.saveLogFile();
+        }
+
         flushAndExit(EX_OK);
         return;
     }
 
     const int viewId = session.getViewId();
-    _queue->removeCursorPosition(viewId);
 
     // Unload the view.
     _loKitDocument->setView(viewId);
@@ -1352,6 +1351,12 @@ void Document::handleSaveMessage(const std::string &)
     // if a bgsave process - now we can clean up.
     if (_isBgSaveProcess)
     {
+        LOG_TRC("BgSave completed");
+        if (BgSaveWatchdog)
+        {
+            BgSaveWatchdog->complete();
+        }
+
         auto socket = _saveProcessParent.lock();
         if (socket)
         {
@@ -1467,8 +1472,8 @@ bool Document::forkToSave(const std::function<void()> &childSave, int viewId)
 
         // sort out thread local variables to get logging right from
         // as early as possible.
-        Util::setThreadName("kitbgsv_" + Util::encodeId(_mobileAppDocId, 3) +
-                            "_" + Util::encodeId(numSaves, 3));
+        Util::setThreadName("kitbgsv_" + Util::encodeId(_mobileAppDocId, 3) + '_' +
+                            Util::encodeId(numSaves, 3));
         _isBgSaveProcess = true;
 
         SigUtil::addActivity("forked background save process: " +
@@ -1481,10 +1486,13 @@ bool Document::forkToSave(const std::function<void()> &childSave, int viewId)
 
         Util::sleepFromEnvIfSet("KitBackgroundSave", "SLEEPBACKGROUNDFORDEBUGGER");
 
+        assert(!BgSaveWatchdog && "Unexpected to have BackgroundSaveWatchdog instance");
+        BgSaveWatchdog = std::make_unique<BackgroundSaveWatchdog>(_mobileAppDocId);
+
         UnitKit::get().postBackgroundSaveFork();
 
         // Background save should run at a lower priority
-        int prio = config::getInt("per_document.bgsave_priority", 5);
+        int prio = ConfigUtil::getInt("per_document.bgsave_priority", 5);
         Util::setProcessAndThreadPriorities(getpid(), prio);
 
         // other queued messages should be handled in the parent kit
@@ -1558,20 +1566,48 @@ void Document::reapZombieChildren()
     /// memory footprint, unloading the process is fast, and we reap it.
     /// For large documents, however, the process ends up a zombie.
     /// Here, we reap any zombies that might exist--at most 1.
-    int status = 0;
-    pid_t pid;
-    while ((pid = ::waitpid(-1, &status, WUNTRACED | WNOHANG)) > 0)
+    for (;;)
     {
-        if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS ||
-                                    WTERMSIG(status) == SIGABRT))
+        const auto [ret, sig] = SigUtil::reapZombieChild(-1);
+        if (ret <= 0)
         {
-            LOG_WRN("BgSave zombie child " << pid << " has exited abnormally");
-        }
-        else
-        {
-            LOG_DBG("Reaped zombie BgSave child " << pid);
+            break;
         }
     }
+}
+
+namespace
+{
+// No need to actually send the values of some keys to the client, it's enough to know if these are
+// provided or not. Replace the actual content with a placeholder.
+void replaceKeysWithPlaceholder(std::string& json, std::initializer_list<std::string>& keys)
+{
+    try
+    {
+        if (!json.empty())
+        {
+            Parser parser;
+            Poco::Dynamic::Var var = parser.parse(json);
+            Object::Ptr jsonObj = var.extract<Object::Ptr>();
+            for (const auto& key : keys)
+            {
+                std::string value;
+                JsonUtil::findJSONValue(jsonObj, key, value);
+                if (!value.empty())
+                {
+                    jsonObj->set(key, " ");
+                }
+            }
+            std::ostringstream jsonStream;
+            jsonObj->stringify(jsonStream);
+            json = jsonStream.str();
+        }
+    }
+    catch(const Poco::BadCastException& exception)
+    {
+        LOG_DBG("user private data is not a dictionary: " << exception.what());
+    }
+}
 }
 
 void Document::notifyViewInfo()
@@ -1630,52 +1666,31 @@ void Document::notifyViewInfo()
 
         for (const auto& viewId : viewIds)
         {
-            if (viewId == it.second->getViewId() && !it.second->getUserPrivateInfo().empty())
+            oss << "{" << viewStrings[viewId];
+            if (viewId == it.second->getViewId())
             {
-                oss << "{" << viewStrings[viewId];
-                std::string userPrivateInfo = it.second->getUserPrivateInfo();
-                try
+                if (!it.second->getUserPrivateInfo().empty())
                 {
-                    if (!userPrivateInfo.empty())
-                    {
-                        // No need to actually send the signing certs/keys to the client, it's
-                        // enough to know if these are provided or not. Replace the actual content
-                        // with a placeholder.
-                        Parser parser;
-                        Poco::Dynamic::Var var = parser.parse(userPrivateInfo);
-                        Object::Ptr userPrivateInfoObj = var.extract<Object::Ptr>();
-                        std::string signatureCert;
-                        JsonUtil::findJSONValue(userPrivateInfoObj, "SignatureCert", signatureCert);
-                        if (!signatureCert.empty())
-                        {
-                            userPrivateInfoObj->set("SignatureCert", " ");
-                        }
-                        std::string signatureKey;
-                        JsonUtil::findJSONValue(userPrivateInfoObj, "SignatureKey", signatureKey);
-                        if (!signatureKey.empty())
-                        {
-                            userPrivateInfoObj->set("SignatureKey", " ");
-                        }
-                        std::string signatureCa;
-                        JsonUtil::findJSONValue(userPrivateInfoObj, "SignatureCa", signatureCa);
-                        if (!signatureCa.empty())
-                        {
-                            userPrivateInfoObj->set("SignatureCa", " ");
-                        }
-                        std::ostringstream userPrivateStream;
-                        userPrivateInfoObj->stringify(userPrivateStream);
-                        userPrivateInfo = userPrivateStream.str();
-                    }
+                    std::string userPrivateInfo = it.second->getUserPrivateInfo();
+                    std::initializer_list<std::string> keys = {
+                        "SignatureCert",
+                        "SignatureKey",
+                        "SignatureCa",
+                    };
+                    replaceKeysWithPlaceholder(userPrivateInfo, keys);
+                    oss << ",\"userprivateinfo\":" << userPrivateInfo;
                 }
-                catch(const Poco::BadCastException& exception)
+                if (!it.second->getServerPrivateInfo().empty())
                 {
-                    LOG_DBG("user private data is not a dictionary: " << exception.what());
+                    std::string serverPrivateInfo = it.second->getServerPrivateInfo();
+                    std::initializer_list<std::string> keys = {
+                        "ESignatureSecret",
+                    };
+                    replaceKeysWithPlaceholder(serverPrivateInfo, keys);
+                    oss << ",\"serverprivateinfo\":" << serverPrivateInfo;
                 }
-                oss << ",\"userprivateinfo\":" << userPrivateInfo;
-                oss << "},";
             }
-            else
-                oss << "{" << viewStrings[viewId] << "},";
+            oss << "},";
         }
 
         if (viewCount > 0)
@@ -1907,7 +1922,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         _isDocPasswordProtected = false;
 
         const char *pURL = uri.c_str();
-        LOG_DBG("Calling lokit::documentLoad(" << FileUtil::anonymizeUrl(pURL) << ", \"" << options << "\").");
+        LOG_DBG("Calling lokit::documentLoad(" << anonymizeUrl(pURL) << ", \"" << options << "\")");
         const auto start = std::chrono::steady_clock::now();
         _loKitDocument.reset(_loKit->documentLoad(pURL, options.c_str()));
 #ifdef __ANDROID__
@@ -1915,8 +1930,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 #endif
         const auto duration = std::chrono::steady_clock::now() - start;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-        LOG_DBG("Returned lokit::documentLoad(" << FileUtil::anonymizeUrl(pURL) << ") in "
-                << elapsed);
+        LOG_DBG("Returned lokit::documentLoad(" << anonymizeUrl(pURL) << ") in " << elapsed);
 #ifdef IOS
         DocumentData::get(_mobileAppDocId).loKitDocument = _loKitDocument.get();
 #endif
@@ -2129,7 +2143,7 @@ bool Document::forwardToChild(const std::string& prefix, const std::vector<char>
 
         std::string abbrMessage;
 #ifndef BUILDING_TESTS
-        if (AnonymizeUserData)
+        if (Anonymizer::enabled())
         {
             abbrMessage = "...";
         }
@@ -2224,12 +2238,25 @@ bool Document::forwardToChild(const std::string& prefix, const std::vector<char>
     return std::string();
 }
 
-bool Document::isTileRequestInsideVisibleArea(const TileCombined& tileCombined)
+float Document::getTilePriority(const std::chrono::steady_clock::time_point &now, const TileDesc &desc) const
 {
-    const auto session = _sessions.findByCanonicalId(tileCombined.getNormalizedViewId());
-    if (!session)
-        return false;
-    return session->isTileInsideVisibleArea(tileCombined);
+    float maxPrio = std::numeric_limits<float>::min();
+
+    assert(_sessions.size() > 0);
+    for (auto it : _sessions)
+    {
+        const std::shared_ptr<ChildSession> &session = it.second;
+
+        // only interested in sessions that match our viewId
+        if (session->getCanonicalViewId() != desc.getNormalizedViewId())
+            continue;
+
+        maxPrio = std::max<int>(maxPrio, session->getTilePriority(now, desc));
+    }
+    if (maxPrio == std::numeric_limits<float>::min())
+        LOG_WRN("No sessions match this viewId " << desc.getNormalizedViewId());
+    LOG_TRC("Priority for tile " << desc.generateID() << " is " << maxPrio);
+    return maxPrio;
 }
 
 // poll is idle, are we ?
@@ -2380,16 +2407,17 @@ void Document::drainQueue()
             }
         }
 
-        if (processInputEnabled() && !isLoadOngoing() &&
-            !isBackgroundSaveProcess() && _queue->getTileQueueSize() > 0)
+        if (canRenderTiles())
         {
-            std::vector<TileCombined> tileRequests = _queue->popWholeTileQueue();
+            float prio = 8; // visible & intersect with an active viewport
+            while (_queue->getTileQueueSize() > 0 && prio >= 8)
+            {
+                TileCombined tileCombined = _queue->popTileQueue(prio);
+                LOG_TRC("Tile priority is " << prio << " for " << tileCombined.serialize());
 
-            // Put requests that include tiles in the visible area to the front to handle those first
-            std::partition(tileRequests.begin(), tileRequests.end(), [this](const TileCombined& req) {
-                return isTileRequestInsideVisibleArea(req); });
-            for (auto& tileCombined : tileRequests)
                 renderTiles(tileCombined);
+            }
+            // if priority is low - do one render, then process more events.
         }
     }
     catch (const std::exception& exc)
@@ -2653,13 +2681,13 @@ void flushTraceEventRecordings()
 static void addRecording(const std::string &recording, bool force)
 {
     // This can be called before the config system is initialized. Guard against that, as calling
-    // config::getBool() would cause an assertion failure.
+    // ConfigUtil::getBool() would cause an assertion failure.
 
     static bool configChecked = false;
     static bool traceEventsEnabled;
-    if (!configChecked && config::isInitialized())
+    if (!configChecked && ConfigUtil::isInitialized())
     {
-        traceEventsEnabled = config::getBool("trace_event[@enable]", false);
+        traceEventsEnabled = ConfigUtil::getBool("trace_event[@enable]", false);
         configChecked = true;
     }
 
@@ -2925,15 +2953,15 @@ void documentViewCallback(const int type, const char* payload, void* data)
 }
 
 /// Called by LOK main-loop the central location for data processing.
-int pollCallback(void* pData, int timeoutUs)
+int pollCallback(void* data, int timeoutUs)
 {
     if (timeoutUs < 0)
-        timeoutUs = net::Defaults::get().SocketPollTimeout.count();
+        timeoutUs = SocketPoll::DefaultPollTimeoutMicroS.count();
 #ifndef IOS
-    if (!pData)
+    if (!data)
         return 0;
     else
-        return reinterpret_cast<KitSocketPoll*>(pData)->kitPoll(timeoutUs);
+        return reinterpret_cast<KitSocketPoll*>(data)->kitPoll(timeoutUs);
 #else
     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
     std::vector<std::shared_ptr<KitSocketPoll>> v;
@@ -2962,44 +2990,24 @@ int pollCallback(void* pData, int timeoutUs)
 #endif
 }
 
+// Do we have any pending input events from coolwsd ?
+// FIXME: we could helpfully poll our incoming socket too here.
 bool anyInputCallback(void* data)
 {
     auto kitSocketPoll = reinterpret_cast<KitSocketPoll*>(data);
     std::shared_ptr<Document> document = kitSocketPoll->getDocument();
-    if (!document)
-    {
-        return false;
-    }
 
-    if (document->hasCallbacks())
-    {
-        return true;
-    }
-
-    std::shared_ptr<KitQueue> queue = document->getQueue();
-    if (!queue)
-    {
-        return false;
-    }
-
-    if (queue->getTileQueueSize() > 0)
-    {
-        return true;
-    }
-
-    // Have no pending callbacks and the tile queue is also empty, report that we have no
-    // pending input events.
-    return false;
+    return document && document->hasQueueItems();
 }
 
 /// Called by LOK main-loop
-void wakeCallback(void* pData)
+void wakeCallback(void* data)
 {
 #ifndef IOS
-    if (!pData)
+    if (!data)
         return;
     else
-        return reinterpret_cast<KitSocketPoll*>(pData)->wakeup();
+        return reinterpret_cast<KitSocketPoll*>(data)->wakeup();
 #else
     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
     if (KitSocketPoll::KSPolls.empty())
@@ -3023,48 +3031,56 @@ void wakeCallback(void* pData)
 namespace
 {
 #if !MOBILEAPP
+
+extern "C"
+{
+    [[maybe_unused]]
+    static void sigChildHandler(int pid)
+    {
+        // Reap the child; will log failures.
+        SigUtil::reapZombieChild(pid);
+    }
+}
+
 void copyCertificateDatabaseToTmp(Poco::Path const& jailPath)
 {
-    std::string aCertificatePathString = config::getString("certificates.database_path", "");
-    if (!aCertificatePathString.empty())
+    std::string certificatePathString = ConfigUtil::getString("certificates.database_path", "");
+    if (!certificatePathString.empty())
     {
-        auto aFileStat = FileUtil::Stat(aCertificatePathString);
+        auto fileStat = FileUtil::Stat(certificatePathString);
 
-        if (!aFileStat.exists() || !aFileStat.isDirectory())
+        if (!fileStat.exists() || !fileStat.isDirectory())
         {
-            LOG_WRN("Certificate database wasn't copied into the jail as path '" << aCertificatePathString << "' doesn't exist");
+            LOG_WRN("Certificate database wasn't copied into the jail as path '" << certificatePathString << "' doesn't exist");
             return;
         }
 
-        Poco::Path aCertificatePath(aCertificatePathString);
+        Poco::Path certificatePath(certificatePathString);
 
-        Poco::Path aJailedCertDBPath(jailPath, "/tmp/certdb");
-        Poco::File(aJailedCertDBPath).createDirectories();
+        Poco::Path jailedCertDBPath(jailPath, "/tmp/certdb");
+        Poco::File(jailedCertDBPath).createDirectories();
 
         bool bCopied = false;
-        for (const char* pFilename : { "cert8.db", "cert9.db", "secmod.db", "key3.db", "key4.db" })
+        for (const char* filename : { "cert8.db", "cert9.db", "secmod.db", "key3.db", "key4.db" })
         {
-            bool bResult = FileUtil::copy(Poco::Path(aCertificatePath, pFilename).toString(),
-                                Poco::Path(aJailedCertDBPath, pFilename).toString(), false, false);
+            bool bResult = FileUtil::copy(Poco::Path(certificatePath, filename).toString(),
+                                Poco::Path(jailedCertDBPath, filename).toString(), false, false);
             bCopied |= bResult;
         }
         if (bCopied)
         {
-            LOG_INF("Certificate database files found in '" << aCertificatePathString << "' and were copied to the jail");
+            LOG_INF("Certificate database files found in '" << certificatePathString << "' and were copied to the jail");
             ::setenv("LO_CERTIFICATE_DATABASE_PATH", "/tmp/certdb", 1);
         }
         else
         {
-            LOG_WRN("No Certificate database files could be found in path '" << aCertificatePathString << "'");
+            LOG_WRN("No Certificate database files could be found in path '" << certificatePathString << "'");
         }
     }
 }
 
 #endif
-}
-
-
-
+} // namespace
 
 void lokit_main(
 #if !MOBILEAPP
@@ -3104,11 +3120,18 @@ void lokit_main(
     const char* logLevel = std::getenv("COOL_LOGLEVEL");
     const char* logDisabledAreas = std::getenv("COOL_LOGDISABLED_AREAS");
     const char* logLevelStartup = std::getenv("COOL_LOGLEVEL_STARTUP");
-    const bool logColor = config::getBool("logging.color", true) && isatty(fileno(stderr));
+    const bool logColor = ConfigUtil::getBool("logging.color", true) && isatty(fileno(stderr));
     std::map<std::string, std::string> logProperties;
     if (logToFile && logFilename)
     {
         logProperties["path"] = std::string(logFilename);
+    }
+    const bool logToFileUICmd = std::getenv("COOL_LOGFILE_UICMD");
+    const char* logFilenameUICmd = std::getenv("COOL_LOGFILENAME_UICMD");
+    std::map<std::string, std::string> logPropertiesUICmd;
+    if (logToFileUICmd && logFilenameUICmd)
+    {
+        logPropertiesUICmd["path"] = std::string(logFilenameUICmd);
     }
 
     Util::rng::reseed();
@@ -3117,7 +3140,7 @@ void lokit_main(
     const std::string LogLevelStartup = logLevelStartup ? logLevelStartup : "trace";
 
     const bool bTraceStartup = (std::getenv("COOL_TRACE_STARTUP") != nullptr);
-    Log::initialize("kit", bTraceStartup ? LogLevelStartup : logLevel, logColor, logToFile, logProperties);
+    Log::initialize("kit", bTraceStartup ? LogLevelStartup : logLevel, logColor, logToFile, logProperties, logToFileUICmd, logPropertiesUICmd);
     if (bTraceStartup && LogLevel != LogLevelStartup)
     {
         LOG_INF("Setting log-level to [" << LogLevelStartup << "] and delaying "
@@ -3125,17 +3148,16 @@ void lokit_main(
     }
     const std::string LogDisabledAreas = logDisabledAreas ? logDisabledAreas : "";
 
-    const char* pAnonymizationSalt = std::getenv("COOL_ANONYMIZATION_SALT");
-    if (pAnonymizationSalt)
+    if (const char* anonymizationSalt = std::getenv("COOL_ANONYMIZATION_SALT"))
     {
-        AnonymizationSalt = std::stoull(std::string(pAnonymizationSalt));
-        AnonymizeUserData = true;
+        const auto salt = std::stoull(anonymizationSalt);
+        Anonymizer::initialize(true, salt);
     }
 
-    LOG_INF("User-data anonymization is " << (AnonymizeUserData ? "enabled." : "disabled."));
+    LOG_INF("User-data anonymization is " << (Anonymizer::enabled() ? "enabled." : "disabled."));
 
-    const char* pEnableWebsocketURP = std::getenv("ENABLE_WEBSOCKET_URP");
-    EnableWebsocketURP = pEnableWebsocketURP && std::string(pEnableWebsocketURP) == "true";
+    const char* enableWebsocketURP = std::getenv("ENABLE_WEBSOCKET_URP");
+    EnableWebsocketURP = enableWebsocketURP && std::string(enableWebsocketURP) == "true";
 
     assert(!childRoot.empty());
     assert(!sysTemplate.empty());
@@ -3185,6 +3207,10 @@ void lokit_main(
             const std::string tempRoot = Poco::Path(childRoot, "tmp").toString();
             const std::string tmpSubDir = Poco::Path(tempRoot, "cool-" + jailId).toString();
             const std::string jailTmpDir = Poco::Path(jailPath, "tmp").toString();
+
+            const std::string tmpIncoming = Poco::Path(childRoot, JailUtil::CHILDROOT_TMP_INCOMING_PATH).toString();
+            const std::string sharedTemplate = Poco::Path(tmpIncoming, "templates/presnt").toString();
+            const std::string loJailDestImpressTemplatePath = Poco::Path(loJailDestPath, "share/template/common/presnt").toString();
 
             const std::string sysTemplateSubDir = Poco::Path(tempRoot, "systemplate-" + jailId).toString();
             const std::string jailEtcDir = Poco::Path(jailPath, "etc").toString();
@@ -3242,6 +3268,16 @@ void lokit_main(
                 {
                     LOG_WRN("Failed to mount [" << loTemplate << "] -> [" << loJailDestPath
                                                 << "], will link/copy contents");
+                    return false;
+                }
+
+                // mount the shared templates over the lo shared templates' 'common' dir
+                if (!JailUtil::bind(sharedTemplate, loJailDestImpressTemplatePath) ||
+                    !JailUtil::remountReadonly(sharedTemplate, loJailDestImpressTemplatePath))
+                {
+                    LOG_WRN("Failed to mount [" << sharedTemplate << "] -> ["
+                                                << loJailDestImpressTemplatePath
+                                                << "], will link contents");
                     return false;
                 }
 
@@ -3324,6 +3360,9 @@ void lokit_main(
                 linkOrCopy(sysTemplate, jailPath, linkablePath, LinkOrCopyType::All);
 
                 linkOrCopy(loTemplate, loJailDestPath, linkablePath, LinkOrCopyType::LO);
+
+                linkOrCopy(sharedTemplate, loJailDestImpressTemplatePath + "/", linkablePath,
+                           LinkOrCopyType::All);
 
 #if CODE_COVERAGE
                 // Link the .gcda files.
@@ -3517,6 +3556,23 @@ void lokit_main(
 
             SigUtil::setVersionInfo(versionString);
 
+            LOG_INF("Kit core version is " << versionString);
+
+            // Extend the list on new releases
+            static const char *denyVersions[] = {
+                "\"22.05\"", "\"23.05\""
+            };
+            for (auto const &deny: denyVersions)
+            {
+                if (Util::findSubArray(versionString.c_str(), versionString.length(),
+                                       deny, strlen(deny)) >= 0)
+                {
+                    LOG_FTL("Mis-matching, obsolete core version, "
+                            "please update your packages: " << versionString);
+                    Util::forcedExit(EX_SOFTWARE);
+                }
+            }
+
             // Add some parameters we want to pass to the client. Could not figure out how to get
             // the configuration parameters from COOLWSD.cpp's initialize() or coolwsd.xml here, so
             // oh well, just have the value hardcoded in KitHelper.hpp. It isn't really useful to
@@ -3603,6 +3659,15 @@ void lokit_main(
         LOG_INF("New kit client websocket inserted.");
 
 #if !MOBILEAPP
+
+        // Since we don't track the bg-save process,
+        // for example to prevent multiple parallel saves,
+        // we could, in principle, ignore SIGCHLD and avoid
+        // the problem of zombies and reaping. Unfortunately,
+        // ignoring SIGCHLD is not portable, according to
+        // man 2 sigaction. So we simply waitpid(2) on SIGCHLD.
+        SigUtil::setSigChildHandler(sigChildHandler);
+
         if (bTraceStartup && LogLevel != LogLevelStartup)
         {
             LOG_INF("Kit initialization complete: setting log-level to [" << LogLevel << "] as configured.");
@@ -3733,18 +3798,18 @@ TileWireId getCurrentWireId(bool increment)
 std::string anonymizeUrl(const std::string& url)
 {
 #ifndef BUILDING_TESTS
-    return AnonymizeUserData ? Util::anonymizeUrl(url, AnonymizationSalt) : url;
+    return Anonymizer::anonymizeUrl(url);
 #else
     return url;
 #endif
 }
 
-static int receiveURPFromLO(void* pContext, const signed char* pBuffer, int bytesToWrite)
+static int receiveURPFromLO(void* context, const signed char* buffer, int bytesToWrite)
 {
     int bytesWritten = 0;
     while (bytesToWrite > 0)
     {
-        int bytes = ::write(reinterpret_cast<intptr_t>(pContext), pBuffer + bytesWritten, bytesToWrite);
+        int bytes = ::write(reinterpret_cast<intptr_t>(context), buffer + bytesWritten, bytesToWrite);
         if (bytes <= 0)
             break;
         bytesToWrite -= bytes;
@@ -3753,12 +3818,12 @@ static int receiveURPFromLO(void* pContext, const signed char* pBuffer, int byte
     return bytesWritten;
 }
 
-static int sendURPToLO(void* pContext, signed char* pBuffer, int bytesToRead)
+static int sendURPToLO(void* context, signed char* buffer, int bytesToRead)
 {
     int bytesRead = 0;
     while (bytesToRead > 0)
     {
-        int bytes = ::read(reinterpret_cast<intptr_t>(pContext), pBuffer + bytesRead, bytesToRead);
+        int bytes = ::read(reinterpret_cast<intptr_t>(context), buffer + bytesRead, bytesToRead);
         if (bytes <= 0)
             break;
         bytesToRead -= bytes;
@@ -3800,8 +3865,8 @@ bool startURP(std::shared_ptr<lok::Office> LOKit, void** ppURPContext)
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
-    const std::string libSofficeapp = loTemplate + "/program/" LIB_SOFFICEAPP;
-    const std::string libMerged = loTemplate + "/program/" LIB_MERGED;
+    const std::string libSofficeapp = loTemplate + "/program/libsofficeapp.so";
+    const std::string libMerged = loTemplate + "/program/libmergedlo.so";
 
     std::string loadedLibrary;
     // we deliberately don't dlclose handle on success, make it
@@ -3856,7 +3921,7 @@ bool globalPreinit(const std::string &loTemplate)
     // desktop or developer's install if env. var not set.
     ::setenv("UNODISABLELIBRARY",
              "abp avmediagst avmediavlc cmdmail losessioninstall OGLTrans PresenterScreen "
-             "syssh ucpftp1 ucpgio1 ucphier1 ucpimage updatecheckui updatefeed updchk"
+             "syssh ucpftp1 ucpgio1 ucpimage updatecheckui updatefeed updchk"
              // Database
              "dbaxml dbmm dbp dbu deployment firebird_sdbc mork "
              "mysql mysqlc odbc postgresql-sdbc postgresql-sdbc-impl sdbc2 sdbt"
@@ -3885,7 +3950,7 @@ bool globalPreinit(const std::string &loTemplate)
 std::string anonymizeUsername(const std::string& username)
 {
 #ifndef BUILDING_TESTS
-    return AnonymizeUserData ? Util::anonymize(username, AnonymizationSalt) : username;
+    return Anonymizer::anonymize(username);
 #else
     return username;
 #endif
@@ -3898,18 +3963,11 @@ void dump_kit_state()
     std::ostringstream oss;
     KitSocketPoll::dumpGlobalState(oss);
 
+    oss << "\nMalloc info: \n" << Util::getMallocInfo() << '\n';
+
     const std::string msg = oss.str();
     fprintf(stderr, "%s", msg.c_str());
     LOG_TRC(msg);
 }
-
-#if defined __GLIBC__
-#  include <malloc.h>
-void dump_malloc_state()
-{
-    malloc_info(0, stderr);
-    fflush(stderr);
-}
-#endif
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

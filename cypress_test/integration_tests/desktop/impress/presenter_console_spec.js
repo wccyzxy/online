@@ -21,6 +21,11 @@ describe(['tagdesktop'], 'Presenter Console.', function() {
 
 			var map = new fakeMap();
 
+			class FakeWindowProxy {
+				addEventListener() {}
+				close() {}
+			}
+
 			class FakeCompositor {
 				computeLayerResolution(width, height) {
 					return [width, height];
@@ -33,16 +38,39 @@ describe(['tagdesktop'], 'Presenter Console.', function() {
 			class FakePresenter {
 				constructor() {
 					this._slideCompositor = new FakeCompositor();
+					// fake window
+					this._slideShowWindowProxy = new FakeWindowProxy();
 				}
 
 				_getSlidesCount() {
 					return 2;
 				}
 
+				getVisibleSlidesCount() {
+					this._getSlidesCount();
+				}
+
+				_getRepeatDuration() {
+					return 0;
+				}
+
+				isSlideHidden() {
+					return false;
+				}
+
+				getNextVisibleSlide(slideNumber) {
+					return slideNumber + 1;
+				}
+
 				getNotes() {
 					return "test notes";
 				}
-			};
+
+				slideshowWindowCleanUp() {
+					// empty body
+				}
+
+			}
 
 			var fakePresenter = new FakePresenter();
 			var fakeConsole = new win.SlideShow.PresenterConsole(map, fakePresenter);

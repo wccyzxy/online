@@ -50,7 +50,6 @@
 #include <Poco/Exception.h>
 #include <Poco/URI.h>
 
-#include <iconv.h>
 #include <string>
 
 bool StorageConnectionManager::SSLAsScheme = true;
@@ -129,7 +128,7 @@ StorageConnectionManager::getHttpSession(const Poco::URI& uri, std::chrono::seco
         // We decoupled the Wopi communication from client communication because
         // the Wopi communication must have an independent policy.
         // So, we will use here only Storage settings.
-        useSSL = SSLEnabled || COOLWSD::isSSLTermination();
+        useSSL = SSLEnabled || ConfigUtil::isSSLTermination();
     }
 
     const auto protocol =
@@ -140,8 +139,8 @@ StorageConnectionManager::getHttpSession(const Poco::URI& uri, std::chrono::seco
 
     if (timeout == std::chrono::seconds::zero())
     {
-        CONFIG_STATIC const std::chrono::seconds defTimeout =
-            std::chrono::seconds(COOLWSD::getConfigValue<int>("net.connection_timeout_secs", 30));
+        CONFIG_STATIC const std::chrono::seconds defTimeout = std::chrono::seconds(
+            ConfigUtil::getConfigValue<int>("net.connection_timeout_secs", 30));
         timeout = defTimeout;
     }
 
@@ -162,15 +161,15 @@ void StorageConnectionManager::initialize()
 
     // false default for upgrade to preserve legacy configuration
     // in-config-file defaults are true.
-    SSLAsScheme = COOLWSD::getConfigValue<bool>("storage.ssl.as_scheme", false);
+    SSLAsScheme = ConfigUtil::getConfigValue<bool>("storage.ssl.as_scheme", false);
 
     // Fallback to ssl.enable if not set - for back compatibility & simplicity.
-    SSLEnabled = COOLWSD::getConfigValue<bool>("storage.ssl.enable",
-                                               COOLWSD::getConfigValue<bool>("ssl.enable", true));
+    SSLEnabled = ConfigUtil::getConfigValue<bool>(
+        "storage.ssl.enable", ConfigUtil::getConfigValue<bool>("ssl.enable", true));
 
 #if ENABLE_DEBUG
     char* StorageSSLEnabled = getenv("STORAGE_SSL_ENABLE");
-    if (StorageSSLEnabled != NULL)
+    if (StorageSSLEnabled != nullptr)
     {
         if (!strcasecmp(StorageSSLEnabled, "true"))
             SSLEnabled = true;
@@ -181,26 +180,26 @@ void StorageConnectionManager::initialize()
 
     if (SSLEnabled || SSLAsScheme)
     {
-        if (COOLWSD::isSSLEnabled())
+        if (ConfigUtil::isSslEnabled())
         {
-            sslClientParams.certificateFile = COOLWSD::getPathFromConfigWithFallback(
+            sslClientParams.certificateFile = ConfigUtil::getPathFromConfigWithFallback(
                 "storage.ssl.cert_file_path", "ssl.cert_file_path");
-            sslClientParams.privateKeyFile = COOLWSD::getPathFromConfigWithFallback(
+            sslClientParams.privateKeyFile = ConfigUtil::getPathFromConfigWithFallback(
                 "storage.ssl.key_file_path", "ssl.key_file_path");
-            sslClientParams.caLocation = COOLWSD::getPathFromConfigWithFallback(
+            sslClientParams.caLocation = ConfigUtil::getPathFromConfigWithFallback(
                 "storage.ssl.ca_file_path", "ssl.ca_file_path");
         }
         else
         {
             sslClientParams.certificateFile =
-                COOLWSD::getPathFromConfig("storage.ssl.cert_file_path");
+                ConfigUtil::getPathFromConfig("storage.ssl.cert_file_path");
             sslClientParams.privateKeyFile =
-                COOLWSD::getPathFromConfig("storage.ssl.key_file_path");
-            sslClientParams.caLocation = COOLWSD::getPathFromConfig("storage.ssl.ca_file_path");
+                ConfigUtil::getPathFromConfig("storage.ssl.key_file_path");
+            sslClientParams.caLocation = ConfigUtil::getPathFromConfig("storage.ssl.ca_file_path");
         }
         sslClientParams.cipherList =
-            COOLWSD::getPathFromConfigWithFallback("storage.ssl.cipher_list", "ssl.cipher_list");
-        const bool sslVerification = COOLWSD::getConfigValue<bool>("ssl.ssl_verification", true);
+            ConfigUtil::getPathFromConfigWithFallback("storage.ssl.cipher_list", "ssl.cipher_list");
+        const bool sslVerification = ConfigUtil::getConfigValue<bool>("ssl.ssl_verification", true);
         sslClientParams.verificationMode =
             !sslVerification ? Poco::Net::Context::VERIFY_NONE : Poco::Net::Context::VERIFY_STRICT;
         sslClientParams.loadDefaultCAs = true;

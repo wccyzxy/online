@@ -173,6 +173,10 @@ class SlideShowNavigator {
 	}
 
 	rewindToPreviousSlide() {
+		// play again transition on first slide and any effect that starts
+		// automatically after the first slide is displayed
+		if (this.currentSlide === 0) this.goToFirstSlide();
+
 		let prevSlide = 0;
 		if (this.currentSlide !== undefined && this.currentSlide > 0) {
 			prevSlide = this.currentSlide - 1;
@@ -183,6 +187,7 @@ class SlideShowNavigator {
 		);
 		this.isRewindingToPrevSlide = true;
 		this.displaySlide(prevSlide, true);
+		this.isRewindingToPrevSlide = false;
 	}
 
 	displaySlide(nNewSlide: number, bSkipTransition: boolean) {
@@ -342,6 +347,34 @@ class SlideShowNavigator {
 			}
 		} else if (aEvent.button === 2) {
 			this.switchSlide(-1, false);
+		}
+	}
+
+	onMouseMove(aEvent: MouseEvent) {
+		if (!this.isEnabled) return;
+
+		const metaSlide = this.theMetaPres.getMetaSlideByIndex(this.currentSlide);
+		if (!metaSlide)
+			window.app.console.log(
+				'SlideShowNavigator.onMouseMove: no meta slide available for index: ' +
+					this.currentSlide,
+			);
+
+		if (metaSlide && metaSlide.animationsHandler) {
+			const aEventMultiplexer = metaSlide.animationsHandler.eventMultiplexer;
+			if (aEventMultiplexer) {
+				if (aEventMultiplexer.hasRegisteredMouseClickHandlers()) {
+					const canvas = this.presenter.getCanvas();
+					const width = canvas.clientWidth;
+					const height = canvas.clientHeight;
+
+					const x = (aEvent.offsetX / width) * this.theMetaPres.slideWidth;
+					const y = (aEvent.offsetY / height) * this.theMetaPres.slideHeight;
+
+					aEventMultiplexer.notifyMouseMove({ x: x, y: y });
+					return;
+				}
+			}
 		}
 	}
 

@@ -12,6 +12,7 @@
 #include <config.h>
 
 #include <chrono>
+#include <csignal>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -26,6 +27,7 @@
 #include "Auth.hpp"
 #include "ConfigUtil.hpp"
 #include <Common.hpp>
+#include <COOLWSD.hpp>
 #include <Log.hpp>
 #include <Protocol.hpp>
 #include <StringVector.hpp>
@@ -121,7 +123,8 @@ void AdminSocketHandler::handleMessage(const std::vector<char> &payload)
              tokens.equals(0, "mem_stats") ||
              tokens.equals(0, "cpu_stats") ||
              tokens.equals(0, "sent_activity") ||
-             tokens.equals(0, "recv_activity"))
+             tokens.equals(0, "recv_activity") ||
+             tokens.equals(0, "connection_activity"))
     {
         const std::string result = model.query(tokens[0]);
         if (!result.empty())
@@ -136,7 +139,8 @@ void AdminSocketHandler::handleMessage(const std::vector<char> &payload)
         // Send COOL version information
         std::string timezoneName;
         if (COOLWSD::IndirectionServerEnabled && COOLWSD::GeolocationSetup)
-            timezoneName = config::getString("indirection_endpoint.geolocation_setup.timezone", "");
+            timezoneName =
+                ConfigUtil::getString("indirection_endpoint.geolocation_setup.timezone", "");
 
         sendTextFrame("coolserver " + Util::getVersionJSON(EnableExperimental, timezoneName));
 
@@ -217,7 +221,9 @@ void AdminSocketHandler::handleMessage(const std::vector<char> &payload)
             << "cpu_stats_size="  << model.query("cpu_stats_size") << ' '
             << "cpu_stats_interval=" << std::to_string(_admin->getCpuStatsInterval()) << ' '
             << "net_stats_size=" << model.query("net_stats_size") << ' '
-            << "net_stats_interval=" << std::to_string(_admin->getNetStatsInterval()) << ' ';
+            << "net_stats_interval=" << std::to_string(_admin->getNetStatsInterval()) << ' '
+            << "connection_stats_size=" << model.query("connection_stats_size") << ' '
+            << "global_host_tcp_connections=" << net::Defaults.maxExtConnections << ' ';
 
         const DocProcSettings& docProcSettings = _admin->getDefDocProcSettings();
         oss << "limit_virt_mem_mb=" << docProcSettings.getLimitVirtMemMb() << ' '
@@ -558,7 +564,7 @@ Admin::Admin()
     std::size_t minHeadroomKb = 1024;
 
     // If we have a manual percentage cap, apply it.
-    const double memLimit = COOLWSD::getConfigValue<double>("memproportion", 0.0);
+    const double memLimit = ConfigUtil::getConfigValue<double>("memproportion", 0.0);
     if (memLimit > 0.0)
     {
         const double headroom = _totalAvailMemKb * (100. - memLimit) / 100.;
@@ -657,6 +663,7 @@ void Admin::pollingThread()
 
             _model.addSentStats(sentCount - _lastSentCount);
             _model.addRecvStats(recvCount - _lastRecvCount);
+            _model.addConnectionStats(StreamSocket::getExternalConnectionCount());
 
             if (_lastRecvCount != recvCount || _lastSentCount != sentCount)
             {
@@ -739,7 +746,7 @@ void Admin::pollingThread()
     _model.sendShutdownReceivedMsg();
 
     static const std::chrono::microseconds closeMonitorMsgTimeout = std::chrono::seconds(
-        COOLWSD::getConfigValue<int>("indirection_endpoint.migration_timeout_secs", 180));
+        ConfigUtil::getConfigValue<int>("indirection_endpoint.migration_timeout_secs", 180));
 
     std::chrono::time_point<std::chrono::steady_clock> closeMonitorMsgStartTime =
         std::chrono::steady_clock::now();
@@ -890,7 +897,7 @@ std::string Admin::getLogLines()
 
     try
     {
-        static const std::string fName = COOLWSD::getPathFromConfig("logging.file.property[0]");
+        static const std::string fName = ConfigUtil::getPathFromConfig("logging.file.property[0]");
         std::ifstream infile(fName);
 
         std::size_t lineCount = 500;
@@ -964,9 +971,11 @@ void Admin::setDocWopiUploadDuration(const std::string& docKey, const std::chron
     addCallback([this, docKey, uploadDuration]{ _model.setDocWopiUploadDuration(docKey, uploadDuration); });
 }
 
-void Admin::addSegFaultCount(unsigned segFaultCount)
+void Admin::addErrorExitCounters(unsigned segFaultCount, unsigned killedCount,
+                                 unsigned oomKilledCount)
 {
-    addCallback([this, segFaultCount]{ _model.addSegFaultCount(segFaultCount); });
+    addCallback([this, segFaultCount, killedCount, oomKilledCount]
+                { _model.addErrorExitCounters(segFaultCount, killedCount, oomKilledCount); });
 }
 
 void Admin::addLostKitsTerminated(unsigned lostKitsTerminated)
@@ -1004,7 +1013,7 @@ template <typename T> T clamp(const T& n, const T& lower, const T& upper)
 void Admin::triggerMemoryCleanup(const size_t totalMem)
 {
     // Trigger mem cleanup when we are consuming too much memory (as configured by sysadmin)
-    static const double memLimit = COOLWSD::getConfigValue<double>("memproportion", 0.0);
+    static const double memLimit = ConfigUtil::getConfigValue<double>("memproportion", 0.0);
     if (memLimit == 0.0 || _totalSysMemKb == 0)
     {
         LOGA_TRC(Admin, "Total memory consumed: " << totalMem <<
@@ -1179,7 +1188,7 @@ void Admin::connectToMonitorSync(const std::string &uri)
 
     LOG_TRC("Add monitor " << uri);
     static const bool logMonitorConnect =
-        COOLWSD::getConfigValue<bool>("admin_console.logging.monitor_connect", true);
+        ConfigUtil::getConfigValue<bool>("admin_console.logging.monitor_connect", true);
     if (logMonitorConnect)
     {
         LOG_ANY("Connected to remote monitor with uri [" << uriWithoutParam << ']');
@@ -1207,6 +1216,7 @@ void Admin::getMetrics(std::ostringstream &metrics)
     size_t memUsed = getTotalMemoryUsage();
 
     metrics << "global_host_system_memory_bytes " << _totalSysMemKb * 1024 << std::endl;
+    metrics << "global_host_tcp_connections " << net::Defaults.maxExtConnections << std::endl;
     metrics << "global_memory_available_bytes " << memAvail * 1024 << std::endl;
     metrics << "global_memory_used_bytes " << memUsed * 1024 << std::endl;
     metrics << "global_memory_free_bytes " << (memAvail - memUsed) * 1024 << std::endl;
@@ -1228,9 +1238,9 @@ void Admin::sendMetrics(const std::shared_ptr<StreamSocket>& socket,
     socket->shutdown();
 
     static bool skipAuthentication =
-        COOLWSD::getConfigValue<bool>("security.enable_metrics_unauthenticated", false);
+        ConfigUtil::getConfigValue<bool>("security.enable_metrics_unauthenticated", false);
     static bool showLog =
-        COOLWSD::getConfigValue<bool>("admin_console.logging.metrics_fetch", true);
+        ConfigUtil::getConfigValue<bool>("admin_console.logging.metrics_fetch", true);
     if (!skipAuthentication && showLog)
     {
         LOG_ANY("Metrics endpoint has been accessed by source IPAddress [" << socket->clientAddress() << ']');
@@ -1251,7 +1261,7 @@ std::vector<std::pair<std::string, int>> Admin::getMonitorList()
     {
         const std::string path = "monitors.monitor[" + std::to_string(i) + ']';
         const std::string uri = config.getString(path, "");
-        const auto retryInterval = COOLWSD::getConfigValue<int>(path + "[@retryInterval]", 20);
+        const auto retryInterval = ConfigUtil::getConfigValue<int>(path + "[@retryInterval]", 20);
         if (!config.has(path))
             break;
         if (!uri.empty())

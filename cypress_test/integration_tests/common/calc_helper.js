@@ -39,6 +39,8 @@ function clickOnFirstCell(firstClick = true, dblClick = false, isA1 = true) {
 	cy.log('Param - dblClick: ' + dblClick);
 
 	// Use the tile's edge to find the first cell's position
+	cy.cGet('#map').should('exist');
+	cy.cGet('#map').should('be.visible');
 	cy.cGet('#map')
 		.then(function(items) {
 			expect(items).to.have.lengthOf(1);
@@ -66,6 +68,7 @@ function clickOnFirstCell(firstClick = true, dblClick = false, isA1 = true) {
 function dblClickOnFirstCell() {
 	cy.log('>> dblClickOnFirstCell - start');
 
+	helper.typeIntoInputField(helper.addressInputSelector, 'A1');
 	clickOnFirstCell(false, true);
 
 	cy.log('<< dblClickOnFirstCell - end');

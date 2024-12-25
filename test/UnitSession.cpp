@@ -39,16 +39,16 @@ int findInDOM(Poco::XML::Document* doc, const char* string, bool checkName,
 {
     int count = 0;
     Poco::XML::NodeIterator itCode(doc, nodeFilter);
-    while (Poco::XML::Node* pNode = itCode.nextNode())
+    while (Poco::XML::Node* node = itCode.nextNode())
     {
         if (checkName)
         {
-            if (pNode->nodeName() == string)
+            if (node->nodeName() == string)
                 count++;
         }
         else
         {
-            if (pNode->getNodeValue().find(string) != std::string::npos)
+            if (node->getNodeValue().find(string) != std::string::npos)
                 count++;
         }
     }
@@ -168,6 +168,7 @@ UnitBase::TestResult UnitSession::testFilesOpenConnection()
         "/hosting/discovery",
         "/hosting/capabilities",
         "/robots.txt",
+        "/cool/signature",
         // "/cool/media",
         // "/cool/clipboard",
         // "/cool/file:\/\/.../ws",
@@ -220,6 +221,7 @@ UnitBase::TestResult UnitSession::testFilesCloseConnection()
         "/hosting/discovery",
         "/hosting/capabilities",
         "/robots.txt",
+        "/cool/signature",
         // "/cool/media",
         // "/cool/clipboard",
         // "/cool/file:\/\/.../ws",

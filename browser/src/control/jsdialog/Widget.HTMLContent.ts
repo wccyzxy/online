@@ -50,7 +50,7 @@ function getPermissionModeElements(
 	} else {
 		permissionModeDiv.classList.add('status-edit-mode');
 		permissionModeDiv.title = _('Permission Mode');
-		permissionModeDiv.textContent = _('Edit');
+		permissionModeDiv.textContent = _('Edit mode');
 	}
 
 	return permissionModeDiv;
@@ -137,6 +137,10 @@ function getDocumentStatusElements(text: string) {
 	return docstat;
 }
 
+function getShowCommentsStatusElements(text: string) {
+	return getStatusbarItemElements('ShowComments', _('Show Comments'), text);
+}
+
 var getElementsFromId = function (
 	id: string,
 	closeCallback: EventListenerOrEventListenerObject,
@@ -170,6 +174,8 @@ var getElementsFromId = function (
 		return getPermissionModeElements(data.isReadOnlyMode, data.canUserWrite);
 	else if (id === 'statepagenumber') return getPageNumberElements(data.text);
 	else if (id === 'statewordcount') return getWordCountElements(data.text);
+	else if (id === 'showcomments')
+		return getShowCommentsStatusElements(data.text);
 	else if (id === 'statusdocpos') return getStatusDocPosElements(data.text);
 	else if (id === 'insertmode') return getInsertModeElements(data.text);
 	else if (id === 'statusselectionmode')
@@ -197,7 +203,10 @@ function htmlContent(
 		setTimeout(() => builder.map.userList.renderAll(), 0);
 
 	if (data.enabled === false && parentContainer.firstChild)
-		(parentContainer.firstChild as HTMLElement).setAttribute('disabled', '');
+		(parentContainer.firstChild as HTMLElement).setAttribute(
+			'disabled',
+			'true',
+		);
 }
 
 JSDialog.htmlContent = htmlContent;

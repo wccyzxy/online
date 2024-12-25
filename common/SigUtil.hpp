@@ -70,6 +70,11 @@ namespace SigUtil
     /// faulting, so we do not wait unnecessarily. Otherwise, we wait for 60s.
     void setUnattended();
 
+    /// Reap one or more children.
+    /// Returns a pair of the return value of waitpid(2)
+    /// and WTERMSIG(stat_loc), if it were SEGV, ABRT, or BUS.
+    std::pair<int, int> reapZombieChild(int pid);
+
 #if !MOBILEAPP
 
     /// Open the signalLog file.
@@ -84,8 +89,12 @@ namespace SigUtil
     /// Signal log number
     void signalLogNumber(std::size_t num, int base = 10);
 
+#endif // !MOBILEAPP
+
     /// Returns the name of the signal.
     const char* signalName(int signo);
+
+#if !MOBILEAPP
 
     /// Register a wakeup function when changing
 
@@ -115,7 +124,10 @@ namespace SigUtil
     /// after a certain (short) timeout.
     bool killChild(const int pid, const int signal);
 
-    extern "C" { typedef void (*SigChildHandler)(uint32_t); }
+    extern "C"
+    {
+        typedef void (*SigChildHandler)(int);
+    }
 
     /// Sets a child death signal handler
     void setSigChildHandler(SigChildHandler fn);

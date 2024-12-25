@@ -13,15 +13,16 @@
 
 #include "Session.hpp"
 
+#include <common/Anonymizer.hpp>
+#include <common/Log.hpp>
+#include <common/Protocol.hpp>
+#include <common/Uri.hpp>
+#include <common/Util.hpp>
+
 #include <Poco/Exception.h>
 #include <Poco/Path.h>
 #include <Poco/String.h>
 #include <Poco/URI.h>
-
-#include <common/Uri.hpp>
-#include "Protocol.hpp"
-#include "Log.hpp"
-#include "Util.hpp"
 
 using namespace COOLProtocol;
 
@@ -144,6 +145,11 @@ void Session::parseDocOptions(const StringVector& tokens, int& part, std::string
             _userPrivateInfo = Uri::decode(value);
             ++offset;
         }
+        else if (name == "serverprivateinfo")
+        {
+            _serverPrivateInfo = Uri::decode(value);
+            ++offset;
+        }
         else if (name == "readonly")
         {
             _isReadOnly = value != "0";
@@ -240,9 +246,9 @@ void Session::parseDocOptions(const StringVector& tokens, int& part, std::string
         }
     }
 
-    Util::mapAnonymized(_userId, _userIdAnonym);
-    Util::mapAnonymized(_userName, _userNameAnonym);
-    Util::mapAnonymized(_jailedFilePath, _jailedFilePathAnonym);
+    Anonymizer::mapAnonymized(_userId, _userIdAnonym);
+    Anonymizer::mapAnonymized(_userName, _userNameAnonym);
+    Anonymizer::mapAnonymized(_jailedFilePath, _jailedFilePathAnonym);
 
     if (tokens.size() > offset)
     {
@@ -294,7 +300,7 @@ void Session::handleMessage(const std::vector<char> &data)
     try
     {
         std::unique_ptr< std::vector<char> > replace;
-        if (UnitBase::isUnitTesting() && !Util::isFuzzing() && UnitBase::get().filterSessionInput(this, &data[0], data.size(), replace))
+        if (UnitBase::isUnitTesting() && !Util::isFuzzing() && UnitBase::get().filterSessionInput(this, data.data(), data.size(), replace))
         {
             if (replace && !replace->empty())
                 _handleInput(replace->data(), replace->size());
@@ -302,7 +308,7 @@ void Session::handleMessage(const std::vector<char> &data)
         }
 
         if (!data.empty())
-            _handleInput(&data[0], data.size());
+            _handleInput(data.data(), data.size());
     }
     catch (const Exception& exc)
     {

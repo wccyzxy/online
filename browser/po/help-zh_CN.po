@@ -2,9 +2,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2024-10-23 18:49+0200\n"
-"PO-Revision-Date: 2024-10-17 07:39+0000\n"
-"Last-Translator: shaokuuipo <shaonick@mail.com>\n"
+"POT-Creation-Date: 2024-12-14 13:17+0200\n"
+"PO-Revision-Date: 2024-11-20 18:10+0000\n"
+"Last-Translator: Tron Lee <472734894@qq.com>\n"
 "Language-Team: Chinese (Simplified Han script) <https://hosted.weblate.org/"
 "projects/collabora-online/help/zh_Hans/>\n"
 "Language: zh_CN\n"
@@ -51,7 +51,6 @@ msgid "Copy"
 msgstr "复制"
 
 #: html/cool-help.html%2Bdiv.div.table.tr.td:13-69
-#, fuzzy
 msgid ""
 "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>C</kbd>,<br "
 "/><kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Insert</kbd>"
@@ -1088,7 +1087,7 @@ msgstr "选择从当前单元格到当前行的最后一个单元格。"
 msgid ""
 "Selects cells from the current cell up to one page in the current column or "
 "extends the existing selection one page up."
-msgstr ""
+msgstr "从当前的单元格向上选择一页至与当前相同的列，或向上扩展一页当前的选择。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:140-184
 msgid "<kbd>Shift</kbd><span class=\"kbd--plus\">+</span><kbd>Page Up</kbd>"
@@ -1098,7 +1097,7 @@ msgstr "<kbd>Shift</kbd><span class=\"kbd--plus\">+</span><kbd>Page Up</kbd>"
 msgid ""
 "Selects cells from the current cell down to one page in the current column "
 "or extends the existing selection one page down."
-msgstr ""
+msgstr "从当前的单元格向下选择一页至与当前相同的列，或向下扩展一页当前的选择。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:141-188
 msgid "<kbd>Shift</kbd><span class=\"kbd--plus\">+</span><kbd>Page Down</kbd>"
@@ -1109,7 +1108,8 @@ msgid ""
 "Moves the cursor to the left edge of the current data range. If the column "
 "to the left of the cell that contains the cursor is empty, the cursor moves "
 "to the next column to the left that contains data"
-msgstr ""
+msgstr "将光标移动到当前的数据范围的左边缘。如果光标所在单元格的左侧列为空，光标移动"
+"至有数据的列的左侧"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:142-265
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Left Arrow</kbd>"
@@ -1120,7 +1120,8 @@ msgid ""
 "Moves the cursor to the right edge of the current data range. If the column "
 "to the right of the cell that contains the cursor is empty, the cursor moves "
 "to the next column to the right that contains data."
-msgstr ""
+msgstr "将光标移动到当前的数据范围的右边缘。如果光标所在单元格的右侧列为空，光标移动"
+"至有数据的列的右侧。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:143-269
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Right Arrow</kbd>"
@@ -1131,7 +1132,8 @@ msgid ""
 "Moves the cursor to the top edge of the current data range. If the row above "
 "the cell that contains the cursor is empty, the cursor moves up to the next "
 "row that contains data."
-msgstr ""
+msgstr "将光标移动到当前的数据范围的上边缘。如果光标所在单元格的上侧行为空，光标移动"
+"至有数据的行的上侧。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:144-241
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Up Arrow</kbd>"
@@ -1142,7 +1144,8 @@ msgid ""
 "Moves the cursor to the bottom edge of the current data range. If the row "
 "below the cell that contains the cursor is empty, the cursor moves down to "
 "the next row that contains data."
-msgstr ""
+msgstr "将光标移动到当前的数据范围的下边缘。如果光标所在单元格的下侧行为空，光标移动"
+"至有数据的行的下侧。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:145-246
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Down Arrow</kbd>"
@@ -1150,7 +1153,7 @@ msgstr "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>下箭头</kbd>"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:146-38
 msgid "Go to next sheet."
-msgstr ""
+msgstr "移动至下一张工作表。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:146-82
 msgid ""
@@ -1162,7 +1165,7 @@ msgstr ""
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:147-38
 msgid "Go to previous sheet."
-msgstr ""
+msgstr "移动至上一张工作表。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:147-86
 msgid ""
@@ -1178,7 +1181,8 @@ msgid ""
 "continuous range of data cells, in the direction of the arrow pressed. If "
 "used to select rows and columns together, a rectangular cell range is "
 "selected."
-msgstr ""
+msgstr "从当前单元格开始，沿箭头所指方向，选择包含数据的所有单元格，直至连续数据单元"
+"格区域的末尾。如果同时选择行和列，则会选择一个矩形单元格区域。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:148-292
 msgid ""
@@ -1190,7 +1194,7 @@ msgstr ""
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:149-38
 msgid "Moves one sheet to the left."
-msgstr ""
+msgstr "向左移动一张表。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:149-93
 msgid "<kbd>Alt</kbd><span class=\"kbd--plus\">+</span><kbd>Page Up</kbd>"
@@ -1249,7 +1253,7 @@ msgstr "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>*</kbd>"
 msgid ""
 "where (/) is the division sign on the numeric key pad. Selects the matrix "
 "formula range that contains the cursor."
-msgstr ""
+msgstr "其中（/）是数字键盘上的除法符号。选择包含光标的矩阵公式范围。"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:154-178
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>/</kbd>"
@@ -1257,7 +1261,7 @@ msgstr "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>/</kbd>"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:155-38
 msgid "Insert cells (as in menu Insert - Cells)"
-msgstr ""
+msgstr "插入单元格（如在菜单中点击“插入-单元格”）"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:155-105
 msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Plus key</kbd>"
@@ -1435,7 +1439,7 @@ msgstr "移动到幻灯片下一个文本对象"
 
 #: html/cool-help.html%2Bdiv.div.div.table.tr.td:246-38
 msgid "Select all in slide"
-msgstr ""
+msgstr "选择幻灯片中的所有元素"
 
 #: html/cool-help.html%2Bdiv.div.div.h2:305-9
 msgid "Draw page keyboard shortcuts"
@@ -2932,18 +2936,19 @@ msgid "Set the properties of the element of the object."
 msgstr ""
 
 #~ msgid ""
-#~ "<span class=\"def\">The menu bar:</span> The main menu is placed on the top "
-#~ "and includes many options, commands for printing, editing, viewing and other "
-#~ "advanced commands. You can hide the menu bar clicking on the <span style="
-#~ "\"height:0.6cm;width:0.6cm; margin: 0px;\" class=\"w2ui-icon fold\"></span> "
-#~ "icon on the far right. Click on the <span style=\"height:0.6cm;width:0.6cm; "
-#~ "margin: 0px;\" class=\"w2ui-icon unfold\"></span> icon to show the menu."
+#~ "<span class=\"def\">The menu bar:</span> The main menu is placed on the "
+#~ "top and includes many options, commands for printing, editing, viewing "
+#~ "and other advanced commands. You can hide the menu bar clicking on the "
+#~ "<span style=\"height:0.6cm;width:0.6cm; margin: 0px;\" class=\"w2ui-icon "
+#~ "fold\"></span> icon on the far right. Click on the <span "
+#~ "style=\"height:0.6cm;width:0.6cm; margin: 0px;\" class=\"w2ui-icon "
+#~ "unfold\"></span> icon to show the menu."
 #~ msgstr ""
-#~ "<span class=\"def\">菜单栏：</span>位于顶部的主菜单包括许多选项，如打印、编辑"
-#~ "、查看和其他高级命令。你可以通过点击最右侧的<span style=\"height:0."
-#~ "6cm;width:0.6cm; margin: 0px;\" class=\"w2ui-icon fold\""
-#~ "></span>图标将其隐藏。点击<span style=\"height:0.6cm;width:0.6cm; margin: "
-#~ "0px;\" class=\"w2ui-icon unfold\"></span>图标则显示菜单。"
+#~ "<span class=\"def\">菜单栏：</span>位于顶部的主菜单包括许多选项，如打印、"
+#~ "编辑、查看和其他高级命令。你可以通过点击最右侧的<span "
+#~ "style=\"height:0.6cm;width:0.6cm; margin: 0px;\" class=\"w2ui-icon "
+#~ "fold\"></span>图标将其隐藏。点击<span style=\"height:0.6cm;width:0.6cm; "
+#~ "margin: 0px;\" class=\"w2ui-icon unfold\"></span>图标则显示菜单。"
 
 #~ msgid "General"
 #~ msgstr "常规"
@@ -2952,19 +2957,19 @@ msgstr ""
 #~ msgstr "Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>E"
 
 #~ msgid ""
-#~ "Click on the submenu (<img style=\"height:0.6cm;width:0.6cm;\" alt=\"\" src="
-#~ "\"images/submenu.svg\">) icon to reply, move and delete comments."
+#~ "Click on the submenu (<img style=\"height:0.6cm;width:0.6cm;\" alt=\"\" "
+#~ "src=\"images/submenu.svg\">) icon to reply, move and delete comments."
 #~ msgstr ""
-#~ "点击子菜单（<img style=\"height:0.6cm;width:0.6cm;\" alt=\"\" src=\"images/submenu."
-#~ "svg\">）图标可回复、移动或删除批注。"
+#~ "点击子菜单（<img style=\"height:0.6cm;width:0.6cm;\" alt=\"\" "
+#~ "src=\"images/submenu.svg\">）图标可回复、移动或删除批注。"
 
 #, fuzzy
 #~ msgid ""
-#~ "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span class="
-#~ "\"kbd--plus\">+</span>B"
+#~ "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span "
+#~ "class=\"kbd--plus\">+</span>B"
 #~ msgstr ""
-#~ "Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span class=\"kbd"
-#~ "--plus\">+</span><kbd>B"
+#~ "Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span "
+#~ "class=\"kbd--plus\">+</span><kbd>B"
 
 #, fuzzy
 #~ msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span>E"
@@ -2992,11 +2997,11 @@ msgstr ""
 
 #, fuzzy
 #~ msgid ""
-#~ "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span class="
-#~ "\"kbd--plus\">+</span>Arrow Down"
+#~ "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span "
+#~ "class=\"kbd--plus\">+</span>Arrow Down"
 #~ msgstr ""
-#~ "Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span class=\"kbd"
-#~ "--plus\">+</span><kbd>下箭头"
+#~ "Ctrl</kbd><span class=\"kbd--plus\">+</span><kbd>Shift</kbd><span "
+#~ "class=\"kbd--plus\">+</span><kbd>下箭头"
 
 #, fuzzy
 #~ msgid "<kbd>Ctrl</kbd><span class=\"kbd--plus\">+</span>Enter"

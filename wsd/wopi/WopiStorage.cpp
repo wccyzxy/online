@@ -12,7 +12,6 @@
 #include <config.h>
 
 #include "WopiStorage.hpp"
-#include "wopi/StorageConnectionManager.hpp"
 
 #include <Auth.hpp>
 #include <CommandControl.hpp>
@@ -25,10 +24,12 @@
 #include <ProofKey.hpp>
 #include <Unit.hpp>
 #include <Util.hpp>
+#include <common/Anonymizer.hpp>
 #include <common/FileUtil.hpp>
 #include <common/JsonUtil.hpp>
 #include <common/TraceEvent.hpp>
 #include <common/Uri.hpp>
+#include <wopi/StorageConnectionManager.hpp>
 
 #include <Poco/Exception.h>
 #include <Poco/Net/AcceptCertificateHandler.h>
@@ -46,7 +47,6 @@
 
 #include <cassert>
 #include <chrono>
-#include <iconv.h>
 #include <memory>
 #include <string>
 
@@ -170,8 +170,8 @@ void WopiStorage::handleWOPIFileInfo(const WOPIFileInfo& wopiFileInfo, LockConte
     setFileInfo(wopiFileInfo);
 
     if (COOLWSD::AnonymizeUserData)
-        Util::mapAnonymized(Uri::getFilenameFromURL(wopiFileInfo.getFilename()),
-                            Uri::getFilenameFromURL(getUri().toString()));
+        Anonymizer::mapAnonymized(Uri::getFilenameFromURL(wopiFileInfo.getFilename()),
+                                  Uri::getFilenameFromURL(getUri().toString()));
 
     if (wopiFileInfo.getSupportsLocks())
         lockCtx.initSupportsLocks();
@@ -212,9 +212,9 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
         JsonUtil::findJSONValue(object, "ObfuscatedUserId", _obfuscatedUserId);
         if (!_obfuscatedUserId.empty())
         {
-            Util::mapAnonymized(getOwnerId(), _obfuscatedUserId);
-            Util::mapAnonymized(_userId, _obfuscatedUserId);
-            Util::mapAnonymized(_username, _obfuscatedUserId);
+            Anonymizer::mapAnonymized(getOwnerId(), _obfuscatedUserId);
+            Anonymizer::mapAnonymized(_userId, _obfuscatedUserId);
+            Anonymizer::mapAnonymized(_username, _obfuscatedUserId);
         }
 
         // Set anonymized version of the above fields before logging.
@@ -236,6 +236,7 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
 
     JsonUtil::findJSONValue(object, "UserExtraInfo", _userExtraInfo);
     JsonUtil::findJSONValue(object, "UserPrivateInfo", _userPrivateInfo);
+    JsonUtil::findJSONValue(object, "ServerPrivateInfo", _serverPrivateInfo);
     JsonUtil::findJSONValue(object, "WatermarkText", _watermarkText);
     JsonUtil::findJSONValue(object, "UserCanWrite", _userCanWrite);
     JsonUtil::findJSONValue(object, "PostMessageOrigin", _postMessageOrigin);
@@ -251,6 +252,7 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
     JsonUtil::findJSONValue(object, "DownloadAsPostMessage", _downloadAsPostMessage);
     JsonUtil::findJSONValue(object, "UserCanNotWriteRelative", _userCanNotWriteRelative);
     JsonUtil::findJSONValue(object, "EnableInsertRemoteImage", _enableInsertRemoteImage);
+    JsonUtil::findJSONValue(object, "EnableInsertRemoteFile", _enableInsertRemoteFile);
     JsonUtil::findJSONValue(object, "DisableInsertLocalImage", _disableInsertLocalImage);
     JsonUtil::findJSONValue(object, "EnableRemoteLinkPicker", _enableRemoteLinkPicker);
     JsonUtil::findJSONValue(object, "EnableShare", _enableShare);
@@ -278,7 +280,7 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
 
     // Update the scheme to https if ssl or ssl termination is on
     if (_postMessageOrigin.starts_with("http://") &&
-        (COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination()))
+        (ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination()))
     {
         _postMessageOrigin.replace(0, 4, "https");
         LOG_DBG("Updating PostMessageOrigin scheme to HTTPS. Updated origin is now ["
@@ -289,7 +291,7 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
     bool isUserLocked = false;
     JsonUtil::findJSONValue(object, "IsUserLocked", isUserLocked);
 
-    if (config::getBool("feature_lock.locked_hosts[@allow]", false))
+    if (ConfigUtil::getBool("feature_lock.locked_hosts[@allow]", false))
     {
         bool isReadOnly = false;
         isUserLocked = false;
@@ -306,9 +308,10 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
         {
             LOG_INF("Could not find matching locked_host: " << host
                                                             << ",applying fallback settings");
-            isReadOnly = config::getBool("feature_lock.locked_hosts.fallback[@read_only]", false);
-            isUserLocked =
-                config::getBool("feature_lock.locked_hosts.fallback[@disabled_commands]", false);
+            isReadOnly =
+                ConfigUtil::getBool("feature_lock.locked_hosts.fallback[@read_only]", false);
+            isUserLocked = ConfigUtil::getBool(
+                "feature_lock.locked_hosts.fallback[@disabled_commands]", false);
         }
 
         if (isReadOnly)
@@ -341,7 +344,7 @@ WopiStorage::WOPIFileInfo::WOPIFileInfo(const FileInfo& fileInfo, Poco::JSON::Ob
             (booleanFlag ? WOPIFileInfo::TriState::True : WOPIFileInfo::TriState::False);
 
     CONFIG_STATIC const std::string overrideWatermarks =
-        COOLWSD::getConfigValue<std::string>("watermark.text", "");
+        ConfigUtil::getConfigValue<std::string>("watermark.text", "");
     if (!overrideWatermarks.empty())
         _watermarkText = overrideWatermarks;
     if (isTemplate(getFilename()))
@@ -420,7 +423,7 @@ StorageBase::LockUpdateResult WopiStorage::updateLockState(const Authorization& 
         failureReason = std::string("Internal error: ") + exc.what();
     }
 
-    return LockUpdateResult(LockUpdateResult::Status::FAILED, lock, failureReason);
+    return LockUpdateResult(LockUpdateResult::Status::FAILED, lock, std::move(failureReason));
 }
 
 void WopiStorage::updateLockStateAsync(const Authorization& auth, LockContext& lockCtx,
@@ -530,7 +533,7 @@ void WopiStorage::updateLockStateAsync(const Authorization& auth, LockContext& l
             LockUpdateResult(LockUpdateResult::Status::UNAUTHORIZED, lock, failureReason)));
     };
 
-    _lockHttpSession->setFinishedHandler(finishedCallback);
+    _lockHttpSession->setFinishedHandler(std::move(finishedCallback));
 
     LOG_DBG("Async " << wopiLog << " request: " << httpRequest.header().toString());
 
@@ -896,7 +899,7 @@ std::size_t WopiStorage::uploadLocalFileToStorageAsync(
 
         LOG_DBG(wopiLog << " async upload request: " << httpRequest.header().toString());
 
-        _uploadHttpSession->setConnectFailHandler([asyncUploadCallback]() {
+        _uploadHttpSession->setConnectFailHandler([asyncUploadCallback](const std::shared_ptr<http::Session>& /* httpSession */) {
             LOG_ERR("Cannot connect for uploading to wopi storage.");
             asyncUploadCallback(AsyncUpload(AsyncUpload::State::Error,
                             UploadResult(UploadResult::Result::FAILED, "Connection failed.")));
@@ -962,11 +965,12 @@ WopiStorage::handleUploadToStorageResponse(const WopiUploadDetails& details,
                         // Get the FileId form the URL, which we use as the anonymized filename.
                         const std::string decodedUrl = Uri::decode(url);
                         const std::string obfuscatedFileId = Uri::getFilenameFromURL(decodedUrl);
-                        Util::mapAnonymized(obfuscatedFileId,
-                                            obfuscatedFileId); // Identity, to avoid re-anonymizing.
+                        Anonymizer::mapAnonymized(
+                            obfuscatedFileId,
+                            obfuscatedFileId); // Identity, to avoid re-anonymizing.
 
                         const std::string filenameOnly = Uri::getFilenameFromURL(filename);
-                        Util::mapAnonymized(filenameOnly, obfuscatedFileId);
+                        Anonymizer::mapAnonymized(filenameOnly, obfuscatedFileId);
                         object->set("Name", COOLWSD::anonymizeUrl(filename));
                     }
 

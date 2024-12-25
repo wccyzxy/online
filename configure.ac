@@ -3,7 +3,7 @@
 
 AC_PREREQ([2.63])
 
-AC_INIT([coolwsd], [24.04.9.1], [https://github.com/CollaboraOnline/online/issues], [coolwsd], [https://collaboraonline.github.io/])
+AC_INIT([coolwsd], [24.04.11.1], [https://github.com/CollaboraOnline/online/issues], [coolwsd], [https://collaboraonline.github.io/])
 LT_INIT([shared, disable-static, dlopen])
 
 AM_INIT_AUTOMAKE([1.10 foreign subdir-objects tar-pax -Wno-portability])
@@ -48,7 +48,7 @@ AC_DEFINE_UNQUOTED([COOLWSD_VERSION],[["$COOLWSD_VERSION"]],[Collabora Online We
 
 # try to add a git hash for a version if we're developing
 COOLWSD_VERSION_HASH="$COOLWSD_VERSION"
-git_hash=`cd ${srcdir} && ( cat dist_git_hash 2> /dev/null || git log -1 --format=%h 2> /dev/null )`
+git_hash=`cd ${srcdir} && ( cat dist_git_hash 2> /dev/null || git log -1 --format=%h --abbrev=10 2> /dev/null )`
 if test "z$git_hash" != "z"; then
    COOLWSD_VERSION_HASH=$git_hash
 fi
@@ -412,6 +412,8 @@ COOLWSD_LOG_TO_FILE="false"
 COOLWSD_LOGFILE="/var/log/coolwsd.log"
 COOLWSD_TRACEEVENTFILE="/var/log/coolwsd.trace.json"
 COOLWSD_ANONYMIZE_USER_DATA=false
+COOLWSD_LOG_UICMD_TO_FILE="false"
+COOLWSD_LOGFILE_UICMD="/var/log/coolwsd-ui-cmd.log"
 BROWSER_LOGGING="false"
 debug_msg="secure mode: product build"
 anonym_msg=""
@@ -421,6 +423,7 @@ bundle_msg="using uglified bundled JS and CSS"
 LOK_LOG_ASSERTIONS=0
 log_asserts_msg="disabled"
 SSL_VERIFY="true"
+SERVER_SIGNATURE="false"
 
 # a reasonable default
 NUM_PRESPAWN_CHILDREN=4
@@ -437,9 +440,12 @@ if test "$enable_debug" = "yes"; then
    COOLWSD_LOGFILE="/tmp/coolwsd.log"
    COOLWSD_TRACEEVENTFILE="/tmp/coolwsd.trace.json"
    COOLWSD_ANONYMIZE_USER_DATA=false
+   COOLWSD_LOG_UICMD_TO_FILE="true"
+   COOLWSD_LOGFILE_UICMD="/tmp/coolwsd-ui-cmd.log"
    BROWSER_LOGGING="true"
    debug_msg="low security debugging mode"
    SSL_VERIFY="false"
+   SERVER_SIGNATURE="true"
 
    # helps attaching to the right process
    NUM_PRESPAWN_CHILDREN=1
@@ -470,6 +476,7 @@ AC_SUBST(ENABLE_DEBUG)
 AC_SUBST(ENABLE_BUNDLE)
 AC_SUBST(COOLWSD_LOGLEVEL)
 AC_SUBST(COOLWSD_LOG_TO_FILE)
+AC_SUBST(COOLWSD_LOG_UICMD_TO_FILE)
 AC_SUBST(BROWSER_LOGGING)
 AC_SUBST(NUM_PRESPAWN_CHILDREN)
 
@@ -490,6 +497,7 @@ if test -n "$with_logfile" ; then
    COOLWSD_LOGFILE="$with_logfile"
 fi
 AC_SUBST(COOLWSD_LOGFILE)
+AC_SUBST(COOLWSD_LOGFILE_UICMD)
 
 if test -n "$with_trace_event_file" ; then
    COOLWSD_TRACEEVENTFILE="$with_trace_event_file"
@@ -526,6 +534,8 @@ AC_MSG_CHECKING([if ssl verification is enabled by default])
 AC_MSG_RESULT([$SSL_VERIFY])
 AC_DEFINE_UNQUOTED([SSL_VERIFY],["$SSL_VERIFY"],[Default SSL Verification mode])
 AC_SUBST(SSL_VERIFY)
+
+AC_SUBST(SERVER_SIGNATURE)
 
 dnl check for a file at a path with an env-var with a given suffix
 AC_DEFUN([CHK_FILE_VAR], dnl env-var, suffix, file-to-match, msg
@@ -912,7 +922,7 @@ WASM_BUILDDIR="$with_wasm_fallback"
 AC_SUBST(WASM_BUILDDIR)
 
 dnl Temporary hack: We hardcode /sample.docx in a few places, so make sure that file is there
-AS_IF(["$host_os" = "emscripten"],
+AS_IF([test "$host_os" = "emscripten"],
       [AC_MSG_CHECKING([that temporarily there is a sample document with a fixed name])
       AS_IF([test -z "$with_wasm_additional_files"],
             [AC_MSG_ERROR([You must use the --with-wasm-additional-files option for now])])
@@ -968,17 +978,26 @@ fi
 
 AC_DEFINE_UNQUOTED([INFOBAR_URL],["$INFOBAR_URL"],[Infobar URL.])
 
-WELCOME_CONFIG_FRAGMENT=/dev/null
+WELCOME_CONFIG_FRAGMENT=
+HOME_MODE_CONFIGURATION=
 ENABLE_WELCOME_MESSAGE=0
 WELCOME_URL=
 if test -n "$with_welcome_url"; then
     WELCOME_URL=$with_welcome_url
     ENABLE_WELCOME_MESSAGE=1
+    HOME_MODE_CONFIGURATION="<home_mode>
+        <enable desc=\"Home users can enable this setting, which in turn disables welcome screen and user feedback popups, but also limits concurrent open connections to 20 and concurrent open documents to 10. The default means that number of concurrent open connections and concurrent open documents are unlimited, but welcome screen and user feedback cannot be switched off.\" type=\"bool\" default=\"false\">false</enable>
+    </home_mode>"
 else
-    WELCOME_CONFIG_FRAGMENT=$srcdir/coolwsd-welcome.xml
+    WELCOME_CONFIG_FRAGMENT="<welcome>
+      <enable type=\"bool\" desc=\"Controls whether the welcome screen should be shown to the users on new install and updates. When enabled, your custom welcome screen must be created at /usr/share/coolwsd/browser/dist/welcome/welcome.html.\" default=\"false\">false</enable>
+    </welcome>"
 fi
 
-AC_SUBST_FILE([WELCOME_CONFIG_FRAGMENT])
+AC_SUBST([WELCOME_CONFIG_FRAGMENT])
+AM_SUBST_NOTMAKE(WELCOME_CONFIG_FRAGMENT)
+AC_SUBST([HOME_MODE_CONFIGURATION])
+AM_SUBST_NOTMAKE(HOME_MODE_CONFIGURATION)
 AC_DEFINE_UNQUOTED([ENABLE_WELCOME_MESSAGE],$ENABLE_WELCOME_MESSAGE,[Should the Release notes message be shown on upgrade])
 AM_CONDITIONAL([ENABLE_WELCOME_MESSAGE], [test "$ENABLE_WELCOME_MESSAGE" = "1"])
 AC_DEFINE_UNQUOTED([WELCOME_URL],["$WELCOME_URL"],[The welcome url of the build.])
@@ -1069,12 +1088,20 @@ fi
 # Code Coverage.
 AC_MSG_CHECKING([whether code-coverage is enabled])
 if test "x$with_coverage" != "x"; then
-    AC_MSG_RESULT([yes ($with_coverage)])
-    CODE_COVERAGE=1
-    CXXFLAGS="$CXXFLAGS --coverage"
-    CFLAGS="$CFLAGS --coverage"
-    LDFLAGS="$LDFLAGS -Wl,--dynamic-list-data --coverage"
-    coverage_msg="Code-Coverage is enabled"
+
+    AC_DEFUN([AC_PROG_LCOV], [AC_CHECK_PROG(LCOV,lcov,yes)])
+    AC_PROG_LCOV
+    if test x"${LCOV}" == x"yes" ; then
+        AC_MSG_RESULT([yes ($with_coverage)])
+        CODE_COVERAGE=1
+        CXXFLAGS="$CXXFLAGS --coverage"
+        CFLAGS="$CFLAGS --coverage"
+        LDFLAGS="$LDFLAGS -Wl,--dynamic-list-data --coverage"
+        coverage_msg="Code-Coverage is enabled"
+    else
+        AC_MSG_ERROR([Please install lcov (v1.16 preferred) to enable code-coverage])
+    fi
+
 else
     AC_MSG_RESULT([no])
     CODE_COVERAGE=0
@@ -1665,7 +1692,7 @@ AC_SUBST(UNLOCK_TITLE)
 
 UNLOCK_LINK=
 if test "$enable_feature_lock" = "yes"; then
-    UNLOCK_LINK="https://www.collaboraoffice.com/subscriptions/"
+    UNLOCK_LINK="https://www.collaboraonline.com/subscriptions/"
 fi
 AC_DEFINE_UNQUOTED([UNLOCK_LINK],["$UNLOCK_LINK"],[Default value of feature_lock.unlock_link])
 AC_SUBST(UNLOCK_LINK)

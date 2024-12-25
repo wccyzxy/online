@@ -67,6 +67,11 @@ interface Interaction {
 	clickAction?: ClickAction;
 }
 
+interface Trigger {
+	hash: string;
+	bounds: DOMRect;
+}
+
 interface SlideInfo {
 	hash: string;
 	index: number;
@@ -89,6 +94,7 @@ interface SlideInfo {
 		fillColor: string;
 	};
 	animations: any;
+	triggers: Array<Trigger>;
 	next: string;
 	prev: string;
 	indexInSlideShow?: number;
@@ -109,21 +115,20 @@ class SlideShowPresenter {
 	_fullscreen: Element = null;
 	_presenterContainer: HTMLDivElement = null;
 	_slideShowCanvas: HTMLCanvasElement = null;
-	_slideShowWindowProxy: ReturnType<typeof window.open> = null;
+	_slideShowWindowProxy: HTMLIFrameElement = null;
 	_windowCloseInterval: ReturnType<typeof setInterval> = null;
-	_currentSlide: number = 0;
 	_slideRenderer: SlideRenderer = null;
-	_animationsHandler: SlideAnimations = null;
 	_canvasLoader: CanvasLoader | null = null;
-	_isAnimationPlaying: boolean = false;
-	_isPresentInWindow: boolean = false;
 	private _pauseTimer: PauseTimerGl | PauseTimer2d;
 	private _slideShowHandler: SlideShowHandler;
 	private _slideShowNavigator: SlideShowNavigator;
 	private _metaPresentation: MetaPresentation;
 	private _startSlide: number;
 	private _presentationInfoChanged: boolean = false;
+	_skipNextSlideShowInfoChangedMsg: boolean = false;
 	private _cypressSVGPresentationTest: boolean = false;
+	private _onKeyDownHandler: (e: KeyboardEvent) => void;
+	private _onImpressModeChanged: any = null;
 
 	constructor(map: any) {
 		this._cypressSVGPresentationTest =
@@ -155,13 +160,15 @@ class SlideShowPresenter {
 	}
 
 	private _init() {
-		this._slideShowHandler = new SlideShowHandler();
-		this._slideShowHandler.setPresenter(this);
+		this._slideShowHandler = new SlideShowHandler(this);
 		this._slideShowNavigator = new SlideShowNavigator(this._slideShowHandler);
 		// do not allow user interaction until we get presentation info
 		this._slideShowNavigator.disable();
 		this._slideShowHandler.setNavigator(this._slideShowNavigator);
 		this._slideShowNavigator.setPresenter(this);
+		this._onKeyDownHandler = this._slideShowNavigator.onKeyDown.bind(
+			this._slideShowNavigator,
+		);
 	}
 
 	private onUpdateParts() {
@@ -182,6 +189,44 @@ class SlideShowPresenter {
 		return this._presentationInfo ? this._presentationInfo.slides.length : 0;
 	}
 
+	_getRepeatDuration() {
+		return this._presentationInfo
+			? this._presentationInfo.loopAndRepeatDuration
+			: 0;
+	}
+
+	public isSlideHidden(slideNumber: number) {
+		const slideInfo = this.getSlideInfo(slideNumber);
+		return slideInfo ? slideInfo.hidden : true;
+	}
+
+	public getVisibleSlidesCount() {
+		let count = 0;
+		const slideCount = this._getSlidesCount();
+		for (let i = 0; i < slideCount; ++i) {
+			if (this.isSlideHidden(i)) continue;
+			++count;
+		}
+		return count;
+	}
+
+	public getNextVisibleSlide(slideNumber: number) {
+		let next = slideNumber;
+		while (next < this._getSlidesCount()) {
+			++next;
+			if (!this.isSlideHidden(next)) break;
+		}
+		return next;
+	}
+
+	public getVisibleIndex(slideNumber: number) {
+		let index = slideNumber;
+		for (let i = 0; i < slideNumber; ++i) {
+			if (this.isSlideHidden(i)) --index;
+		}
+		return index;
+	}
+
 	public isFullscreen() {
 		if (this._cypressSVGPresentationTest) return false;
 		return !!this._fullscreen;
@@ -200,10 +245,7 @@ class SlideShowPresenter {
 		this._fullscreen = document.fullscreenElement;
 		if (this._fullscreen) {
 			// window.addEventListener('keydown', this._onCanvasKeyDown.bind(this));
-			window.addEventListener(
-				'keydown',
-				this._slideShowNavigator.onKeyDown.bind(this._slideShowNavigator),
-			);
+			window.addEventListener('keydown', this._onKeyDownHandler);
 			this.centerCanvas();
 		} else {
 			// we need to cleanup current/prev slide
@@ -214,13 +256,10 @@ class SlideShowPresenter {
 	_stopFullScreen() {
 		if (!this._slideShowCanvas) return;
 
+		if (this._slideCompositor) this._slideCompositor.deleteResources();
 		this._slideRenderer.deleteResources();
 
-		// window.removeEventListener('keydown', this._onCanvasKeyDown.bind(this));
-		window.removeEventListener(
-			'keydown',
-			this._slideShowNavigator.onKeyDown.bind(this._slideShowNavigator),
-		);
+		window.removeEventListener('keydown', this._onKeyDownHandler);
 
 		L.DomUtil.remove(this._slideShowCanvas);
 		this._slideShowCanvas = null;
@@ -234,67 +273,13 @@ class SlideShowPresenter {
 		this._map.focus();
 	}
 
-	// TODO _nextSlide (don't hack this, no more used):
-	//  port endless/repeat to SlideShowNavigator,
-	//  to be removed
-	_nextSlide() {
-		window.app.console.log('SlideShowPresenter._nextSlide');
-
-		if (this._currentSlide + 1 >= this._getSlidesCount()) {
-			const info = this._presentationInfo;
-			if (info?.isEndless == undefined || !info.isEndless) {
-				if (this._currentSlide + 1 === this._getSlidesCount()) {
-					this._currentSlide++;
-					if (this.exitSlideshowWithWarning()) return;
-				}
-				this._closeSlideShowWindow();
-				this._stopFullScreen();
-				return;
-			}
-
-			this.startTimer(info.loopAndRepeatDuration);
-			return;
-		}
-
-		this._slideCompositor.fetchAndRun(this._currentSlide, () => {
-			this._currentSlide++;
-			this._doTransition(
-				this._slideRenderer.getSlideTexture(),
-				this._currentSlide,
-			);
-		});
-	}
-
-	// TODO _previoustSlide (don't hack this, no more used) to be removed
-	_previoustSlide() {
-		window.app.console.log('SlideShowPresenter._previoustSlide');
-
-		if (this._currentSlide <= 0) {
-			return;
-		}
-
-		// if we are at exit text slide, we have to go back....
-		if (this._currentSlide === this._getSlidesCount()) {
-			this._currentSlide--;
-			this._slideCompositor.fetchAndRun(this._currentSlide, () => {
-				this._doPresentation();
-			});
-			return;
-		}
-
-		this._slideCompositor.fetchAndRun(this._currentSlide, () => {
-			this._currentSlide--;
-			this._doPresentation();
-		});
-	}
-
 	private centerCanvas() {
 		if (!this._slideShowCanvas) return;
 		let winWidth = 0;
 		let winHeight = 0;
-		if (this._slideShowWindowProxy && !this._slideShowWindowProxy.closed) {
-			winWidth = this._slideShowWindowProxy.innerWidth;
-			winHeight = this._slideShowWindowProxy.innerHeight;
+		if (this._slideShowWindowProxy) {
+			winWidth = this._slideShowWindowProxy.clientWidth;
+			winHeight = this._slideShowWindowProxy.clientHeight;
 		} else if (this.isFullscreen()) {
 			winWidth = window.screen.width;
 			winHeight = window.screen.height;
@@ -356,14 +341,18 @@ class SlideShowPresenter {
 			'click',
 			this._slideShowNavigator.onClick.bind(this._slideShowNavigator),
 		);
+		canvas.addEventListener(
+			'mousemove',
+			this._slideShowNavigator.onMouseMove.bind(this._slideShowNavigator),
+		);
+
+		this._slideShowHandler.getContext().aCanvas = canvas;
 
 		try {
 			this._slideRenderer = new SlideRendererGl(canvas);
 		} catch (error) {
 			this._slideRenderer = new SlideRenderer2d(canvas);
 		}
-
-		if (this._slideRenderer._context.is2dGl()) this._slideShowHandler.disable();
 
 		return canvas;
 	}
@@ -403,8 +392,8 @@ class SlideShowPresenter {
 			if (!force && this.exitSlideshowWithWarning()) {
 				return;
 			}
-			this._closeSlideShowWindow();
 			this._stopFullScreen();
+			this._closeSlideShowWindow();
 			return;
 		}
 		this.startTimer(settings.loopAndRepeatDuration);
@@ -427,57 +416,12 @@ class SlideShowPresenter {
 		this._canvasLoader = null;
 	}
 
-	// TODO _doTransition (don't hack this, no more used)
-	//  port to SlideShowHandler transitionType = 'NONE' (?)
-	//  to be removed
-	_doTransition(
-		currentTexture: WebGLTexture | ImageBitmap,
-		nextSlideNumber: number,
-	) {
-		this._slideCompositor.fetchAndRun(nextSlideNumber, () => {
-			const slideInfo = this.getSlideInfo(nextSlideNumber);
-			if (
-				slideInfo.transitionType == undefined ||
-				slideInfo.transitionType.length == 0
-			) {
-				slideInfo.transitionType = 'NONE';
-			}
-
-			this.stopLoader();
-
-			const nextSlide = this._slideCompositor.getSlide(nextSlideNumber);
-			const nextTexture = this._slideRenderer.createTexture(nextSlide);
-
-			const transitionParameters = new TransitionParameters();
-			transitionParameters.context = this._slideRenderer._context;
-			transitionParameters.current = currentTexture;
-			transitionParameters.next = nextTexture;
-			transitionParameters.transitionFilterInfo =
-				TransitionFilterInfo.fromSlideInfo(slideInfo);
-			transitionParameters.callback = () => {
-				this._slideRenderer.renderSlide(
-					nextTexture,
-					slideInfo,
-					this._presentationInfo.docWidth,
-					this._presentationInfo.docHeight,
-				);
-			};
-
-			SlideShow.PerformTransition(transitionParameters);
-
-			if (slideInfo?.nextSlideDuration && slideInfo.nextSlideDuration > 0) {
-				setTimeout(() => {
-					this._nextSlide();
-				}, slideInfo.transitionDuration + slideInfo.nextSlideDuration);
-			}
-		});
-	}
-
 	_generateSlideWindowHtml(title: string) {
 		const sanitizer = document.createElement('div');
 		sanitizer.innerText = title;
 
 		const sanitizedTitle = sanitizer.innerHTML;
+
 		return `
 			<!DOCTYPE html>
 			<html lang="en">
@@ -494,46 +438,17 @@ class SlideShowPresenter {
 	}
 
 	_closeSlideShowWindow() {
-		if (
-			this._slideShowWindowProxy == null ||
-			this._slideShowWindowProxy.closed
-		) {
-			return;
+		if (this._slideShowWindowProxy) {
+			this._slideShowWindowProxy.parentElement.removeChild(
+				this._slideShowWindowProxy,
+			);
+			this._map.fire('presentinwindowclose');
+			this._slideShowWindowProxy = null;
 		}
-		this._slideShowWindowProxy.opener.focus();
-		this._slideShowWindowProxy.close();
+		// enable present in console on closeSlideShowWindow
+		this._enablePresenterConsole(false);
 		this._map.uiManager.closeSnackbar();
-	}
-
-	// TODO _doPresentation (don't hack this, no more used) to be removed
-	_doPresentation(isStarting = false) {
-		this._slideRenderer.pauseVideos();
-		const slideInfo = this.getSlideInfo(this._currentSlide);
-		// To speed up the process, if we have transition info, then only render
-		// a black empty slide as the first slide. otherwise, directly render the first slide.
-		if (
-			isStarting &&
-			slideInfo?.transitionType != undefined &&
-			slideInfo.transitionType != 'NONE'
-		) {
-			// generate empty black slide
-			const blankTexture = this._slideRenderer.createEmptyTexture();
-
-			this._doTransition(blankTexture, this._currentSlide);
-		} else {
-			this._slideCompositor.fetchAndRun(this._currentSlide, () => {
-				const slideInfo = this.getSlideInfo(this._currentSlide);
-				const slideImage = this._slideCompositor.getSlide(this._currentSlide);
-				const currentTexture = this._slideRenderer.createTexture(slideImage);
-				this._slideRenderer.renderSlide(
-					currentTexture,
-					slideInfo,
-					this._presentationInfo.docWidth,
-					this._presentationInfo.docHeight,
-				);
-				this.stopLoader();
-			});
-		}
+		this._map.focus();
 	}
 
 	_doFallbackPresentation() {
@@ -542,10 +457,7 @@ class SlideShowPresenter {
 	}
 
 	_getProxyDocumentNode() {
-		if (this._cypressSVGPresentationTest)
-			return (this._slideShowWindowProxy as any as HTMLIFrameElement)
-				.contentWindow.document;
-		else return this._slideShowWindowProxy.document;
+		return this._slideShowWindowProxy.contentWindow.document;
 	}
 
 	_doInWindowPresentation() {
@@ -553,26 +465,19 @@ class SlideShowPresenter {
 			_('Windowed Presentation: ') + this._map['wopi'].BaseFileName;
 		const htmlContent = this._generateSlideWindowHtml(popupTitle);
 
-		if (this._cypressSVGPresentationTest) {
-			this._slideShowWindowProxy = L.DomUtil.createWithId(
-				'iframe',
-				'slideshow-cypress-iframe',
-				document.body,
-			);
-			this._getProxyDocumentNode().open();
-			this._getProxyDocumentNode().write('<html><body></body></html>');
-			this._getProxyDocumentNode().close();
-		} else {
-			this._slideShowWindowProxy = window.open('', '_blank', 'popup');
-		}
+		this._slideShowWindowProxy = L.DomUtil.createWithId(
+			'iframe',
+			'slideshow-cypress-iframe',
+			document.body,
+		);
+		this._getProxyDocumentNode().open();
+		this._getProxyDocumentNode().write(htmlContent);
 
 		if (!this._slideShowWindowProxy) {
 			this._notifyBlockedPresenting();
 			return;
 		}
 
-		this._getProxyDocumentNode().documentElement.innerHTML = htmlContent;
-		this._getProxyDocumentNode().close();
 		this._slideShowWindowProxy.focus();
 
 		// set body styles
@@ -589,22 +494,20 @@ class SlideShowPresenter {
 		);
 		this._slideShowCanvas.focus();
 
-		this._slideShowWindowProxy.addEventListener(
-			'resize',
-			this.onSlideWindowResize.bind(this),
-		);
-		this._slideShowWindowProxy.addEventListener(
+		window.addEventListener('resize', this.onSlideWindowResize.bind(this));
+		this._getProxyDocumentNode().addEventListener(
 			'keydown',
-			this._slideShowNavigator.onKeyDown.bind(this._slideShowNavigator),
+			this._onKeyDownHandler,
 		);
-
+		this._slideShowWindowProxy.addEventListener(
+			'unload',
+			L.bind(this._closeSlideShowWindow, this),
+		);
 		const slideShowWindow = this._slideShowWindowProxy;
 		this._map.uiManager.showSnackbar(
 			_('Presenting in window'),
 			_('Close Presentation'),
-			function () {
-				slideShowWindow.close();
-			},
+			L.bind(this._closeSlideShowWindow, this),
 			-1,
 			false,
 			true,
@@ -612,17 +515,41 @@ class SlideShowPresenter {
 
 		this._windowCloseInterval = setInterval(
 			function () {
-				if (slideShowWindow.closed) {
-					clearInterval(this._windowCloseInterval);
-					this._slideShowNavigator.quit();
-					this._map.uiManager.closeSnackbar();
-					this._slideShowCanvas = null;
-					this._presenterContainer = null;
-					this._slideShowWindowProxy = null;
-				}
+				if (!slideShowWindow.isConnected) this.slideshowWindowCleanUp();
 			}.bind(this),
 			500,
 		);
+
+		window.addEventListener(
+			'beforeunload',
+			this.slideshowWindowCleanUp.bind(this),
+		);
+	}
+
+	slideshowWindowCleanUp() {
+		clearInterval(this._windowCloseInterval);
+		this._slideShowNavigator.quit();
+		this._map.uiManager.closeSnackbar();
+		this._slideShowCanvas = null;
+		this._presenterContainer = null;
+		this._slideShowWindowProxy = null;
+		window.removeEventListener('resize', this.onSlideWindowResize.bind(this));
+		window.removeEventListener(
+			'beforeunload',
+			this.slideshowWindowCleanUp.bind(this),
+		);
+	}
+
+	_onImpressModeChangedImpl(e: any, inWindow: boolean) {
+		if (this._onImpressModeChanged && e.mode === 0) {
+			this._map.off('impressmodechanged', this._onImpressModeChanged, this);
+			this._onImpressModeChanged = null;
+			const startSlide = {
+				startSlideNumber: this._startSlide,
+			};
+			const startSlideshow = inWindow ? this._onStartInWindow : this._onStart;
+			setTimeout(startSlideshow.bind(this, startSlide), 500);
+		}
 	}
 
 	/// returns true on success
@@ -642,6 +569,23 @@ class SlideShowPresenter {
 			(window as any).ThisIsTheAndroidApp
 		) {
 			window.postMobileMessage('SLIDESHOW');
+			return false;
+		}
+
+		if (app.impress.notesMode) {
+			console.debug(
+				'SlideShowPresenter._onPrepareScreen: notes mode is enabled, exiting',
+			);
+			// exit notes view mode and wait for status update notification
+			// so we're sure that impress mode is changed
+			// finally skip next partsupdate event,
+			// since it's only due to the mode change
+			this._skipNextSlideShowInfoChangedMsg = true;
+			this._onImpressModeChanged = function (e: any) {
+				this._onImpressModeChangedImpl(e, inWindow);
+			};
+			this._map.on('impressmodechanged', this._onImpressModeChanged, this);
+			app.map.sendUnoCommand('.uno:NormalMultiPaneGUI');
 			return false;
 		}
 
@@ -716,6 +660,7 @@ class SlideShowPresenter {
 	}
 
 	_notifyBlockedPresenting() {
+		this._enablePresenterConsole(false);
 		this._map.uiManager.showInfoModal(
 			'popup-blocked-modal',
 			_('Windowed Presentation Blocked'),
@@ -727,6 +672,13 @@ class SlideShowPresenter {
 			null,
 			false,
 		);
+	}
+
+	_enablePresenterConsole(state: boolean) {
+		this._map.fire('commandstatechanged', {
+			commandName: 'presenterconsole',
+			disabled: state,
+		});
 	}
 
 	_checkPresentationDisabled() {
@@ -747,21 +699,24 @@ class SlideShowPresenter {
 
 	/// called when user triggers the presentation using UI
 	_onStart(that: any) {
+		this._startSlide = that?.startSlideNumber ?? 0;
 		if (!this._onPrepareScreen(false))
 			// opens full screen, has to be on user interaction
 			return;
+		// disable slide sorter or it will receive key events
+		this._map._docLayer._preview.partsFocused = false;
 
-		this._startSlide = that?.startSlideNumber ?? 0;
 		app.socket.sendMessage('getpresentationinfo');
 	}
 
 	/// called when user triggers the in-window presentation using UI
 	_onStartInWindow(that: any) {
+		this._startSlide = that?.startSlideNumber ?? 0;
 		if (!this._onPrepareScreen(true))
 			// opens full screen, has to be on user interaction
 			return;
-
-		this._startSlide = that?.startSlideNumber ?? 0;
+		// disable present in console onStartInWindow
+		this._enablePresenterConsole(true);
 		app.socket.sendMessage('getpresentationinfo');
 	}
 
@@ -848,14 +803,14 @@ class SlideShowPresenter {
 			this._startSlide,
 			skipTransition,
 		);
-		// TODO remove comment out code
-		// this._slideCompositor.fetchAndRun(0, () => {
-		// 	this._doPresentation(true);
-		// });
 	}
 
 	onSlideShowInfoChanged() {
 		if (this._presentationInfoChanged) return;
+		if (this._skipNextSlideShowInfoChangedMsg) {
+			this._skipNextSlideShowInfoChangedMsg = false;
+			return;
+		}
 
 		this._presentationInfoChanged = true;
 		app.socket.sendMessage('getpresentationinfo');

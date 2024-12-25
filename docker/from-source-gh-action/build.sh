@@ -13,7 +13,7 @@
 
 if [ -z "$CORE_ASSETS" ]; then
   if [ -z "$CORE_BRANCH" ]; then
-    CORE_BRANCH="distro/collabora/co-24.05"
+    CORE_BRANCH="distro/collabora/co-24.04"
   fi;
   echo "Building core branch '$CORE_BRANCH'"
 else
@@ -46,9 +46,9 @@ mkdir -p "$INSTDIR"
 ##### build static poco #####
 
 if test ! -f poco/lib/libPocoFoundation.a ; then
-    wget https://github.com/pocoproject/poco/archive/poco-1.11.1-release.tar.gz
-    tar -xzf poco-1.11.1-release.tar.gz
-    cd poco-poco-1.11.1-release/
+    wget https://pocoproject.org/releases/poco-1.12.5p2/poco-1.12.5p2-all.tar.gz
+    tar -xzf poco-1.12.5p2-all.tar.gz
+    cd poco-1.12.5p2-all/
     ./configure --static --no-tests --no-samples --no-sharedlibs --cflags="-fPIC" --omit=Zip,Data,Data/SQLite,Data/ODBC,Data/MySQL,MongoDB,PDF,CppParser,PageCompiler,Redis,Encodings,ActiveRecord --prefix=$BUILDDIR/poco
     make -j $(nproc)
     make install
@@ -112,9 +112,9 @@ fi
 
 # Build online branding if available
 if test -d online-branding ; then
-  npm install -g sass
+  if ! which sass &> /dev/null; then npm install -g sass; fi
   cd online-branding
-  ./brand.sh $INSTDIR/opt/lokit $INSTDIR/usr/share/coolwsd/browser/dist 3 # CODE
-  ./brand.sh $INSTDIR/opt/lokit $INSTDIR/usr/share/coolwsd/browser/dist 5 # Nextcloud Office
+  ./brand.sh $INSTDIR/opt/lokit $INSTDIR/usr/share/coolwsd/browser/dist CODE # CODE
+  ./brand.sh $INSTDIR/opt/lokit $INSTDIR/usr/share/coolwsd/browser/dist NC-theme-community # Nextcloud Office
   cd ..
 fi

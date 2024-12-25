@@ -29,42 +29,16 @@ struct sockaddr;
 namespace net
 {
 
-class Defaults
+class DefaultValues
 {
 public:
-    /// WebSocketHandler ping timeout in us (2s default). Zero disables metric.
-    std::chrono::microseconds WSPingTimeout;
-    /// WebSocketHandler ping period in us (3s default), i.e. duration until next ping. Zero disables metric.
-    std::chrono::microseconds WSPingPeriod;
-    /// http::Session timeout in us (30s default). Zero disables metric.
-    std::chrono::microseconds HTTPTimeout;
+    /// StreamSocket inactivity timeout in us (3600s default). Zero disables instrument.
+    std::chrono::microseconds inactivityTimeout;
 
-    /// Maximum total connections (9999 or MAX_CONNECTIONS). Zero disables metric.
-    size_t MaxConnections;
-
-    /// Socket poll timeout in us (64s), useful to increase for debugging.
-    std::chrono::microseconds SocketPollTimeout;
-
-private:
-    Defaults()
-        : WSPingTimeout(std::chrono::microseconds(2000000))
-        , WSPingPeriod(std::chrono::microseconds(3000000))
-        , HTTPTimeout(std::chrono::microseconds(30000000))
-        , MaxConnections(9999)
-        , SocketPollTimeout(std::chrono::microseconds(64000000))
-    {
-    }
-
-public:
-    Defaults(const Defaults&) = delete;
-    Defaults(Defaults&&) = delete;
-
-    static Defaults& get()
-    {
-        static Defaults def;
-        return def;
-    }
+    /// Maximum number of concurrent external TCP connections. Zero disables instrument.
+    size_t maxExtConnections;
 };
+extern DefaultValues Defaults;
 
 class HostEntry
 {
@@ -72,7 +46,7 @@ class HostEntry
     std::string _canonicalName;
     std::vector<std::string> _ipAddresses;
     std::shared_ptr<addrinfo> _ainfo;
-    int _errno;
+    int _saved_errno;
     int _eaino;
 
     void setEAI(int eaino);
@@ -83,7 +57,7 @@ public:
     HostEntry(const std::string& desc, const char* port);
     ~HostEntry();
 
-    bool good() const { return _errno == 0 && _eaino == 0; }
+    bool good() const { return _saved_errno == 0 && _eaino == 0; }
     std::string errorMessage() const;
 
     const std::string& getCanonicalName() const { return  _canonicalName; }
@@ -115,7 +89,17 @@ std::shared_ptr<StreamSocket>
 connect(const std::string& host, const std::string& port, const bool isSSL,
         const std::shared_ptr<ProtocolHandlerInterface>& protocolHandler);
 
-typedef std::function<void(std::shared_ptr<StreamSocket>)> asyncConnectCB;
+enum class AsyncConnectResult{
+    Ok = 0,
+    SocketError,
+    ConnectionError,
+    HostNameError,
+    UnknownHostError,
+    SSLHandShakeFailure,
+    MissingSSLError
+};
+
+typedef std::function<void(std::shared_ptr<StreamSocket>, AsyncConnectResult result)> asyncConnectCB;
 
 void
 asyncConnect(const std::string& host, const std::string& port, const bool isSSL,
@@ -129,14 +113,14 @@ connect(std::string uri, const std::shared_ptr<ProtocolHandlerInterface>& protoc
 /// Decomposes a URI into its components.
 /// Returns true if parsing was successful.
 bool parseUri(std::string uri, std::string& scheme, std::string& host, std::string& port,
-              std::string& url);
+              std::string& pathAndQuery);
 
 /// Decomposes a URI into its components.
 /// Returns true if parsing was successful.
 inline bool parseUri(std::string uri, std::string& scheme, std::string& host, std::string& port)
 {
-    std::string url;
-    return parseUri(std::move(uri), scheme, host, port, url);
+    std::string pathAndQuery;
+    return parseUri(std::move(uri), scheme, host, port, pathAndQuery);
 }
 
 /// Return the locator given a URI.

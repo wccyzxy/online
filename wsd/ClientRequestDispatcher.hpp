@@ -71,10 +71,18 @@ private:
     bool handleCapabilitiesRequest(const Poco::Net::HTTPRequest& request,
                                    const std::shared_ptr<StreamSocket>& socket);
 
+    bool handleWopiAccessCheckRequest(const Poco::Net::HTTPRequest& request,
+                                   Poco::MemoryInputStream& message,
+                                   const std::shared_ptr<StreamSocket>& socket);
+
     /// @return true if request has been handled synchronously and response sent, otherwise false
     static bool handleClipboardRequest(const Poco::Net::HTTPRequest& request,
                                        Poco::MemoryInputStream& message,
                                        SocketDisposition& disposition,
+                                       const std::shared_ptr<StreamSocket>& socket);
+
+    /// @return true if request has been handled synchronously and response sent, otherwise false
+    static bool handleSignatureRequest(const Poco::Net::HTTPRequest& request,
                                        const std::shared_ptr<StreamSocket>& socket);
 
     /// @return true if request has been handled synchronously and response sent, otherwise false

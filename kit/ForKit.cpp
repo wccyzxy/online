@@ -29,6 +29,7 @@
 #include <map>
 #include <thread>
 #include <chrono>
+#include <utility>
 
 #include <Poco/Path.h>
 #include <Poco/URI.h>
@@ -94,6 +95,8 @@ void dump_forkit_state()
         << "  MasterLocation: " << MasterLocation
         << "\n";
 
+    oss << "\nMalloc info: \n" << Util::getMallocInfo() << '\n';
+
     const std::string msg = oss.str();
     fprintf(stderr, "%s", msg.c_str());
     LOG_TRC(msg);
@@ -110,9 +113,9 @@ class ServerWSHandler final : public WebSocketHandler
     std::string _socketName;
 
 public:
-    ServerWSHandler(const std::string& socketName) :
-        WebSocketHandler(/* isClient = */ true, /* isMasking */ false),
-        _socketName(socketName)
+    explicit ServerWSHandler(std::string socketName)
+        : WebSocketHandler(/* isClient = */ true, /* isMasking */ false)
+        , _socketName(std::move(socketName))
     {
     }
 
@@ -281,25 +284,61 @@ static void cleanupChildren()
     pid_t exitedChildPid;
     int status = 0;
     int segFaultCount = 0;
+    int killedCount = 0;
+    int oomKilledCount = 0;
 
+    siginfo_t info;
     // Reap quickly without doing slow cleanup so WSD can spawn more rapidly.
-    while ((exitedChildPid = waitpid(-1, &status, WUNTRACED | WNOHANG)) > 0)
+    while (waitid(P_ALL, -1, &info, WEXITED | WUNTRACED | WNOHANG) == 0)
     {
+        if (info.si_pid == 0)
+        {
+            // WNOHANG special case
+            break;
+        }
+
+        exitedChildPid = info.si_pid;
+        status = info.si_status;
+
         const auto it = childJails.find(exitedChildPid);
         if (it != childJails.end())
         {
-            if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV ||
-                                        WTERMSIG(status) == SIGBUS ||
-                                        WTERMSIG(status) == SIGABRT))
+            if (WIFSIGNALED(status))
             {
-                ++segFaultCount;
+                if (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS ||
+                    WTERMSIG(status) == SIGABRT)
+                {
+                    ++segFaultCount;
 
-                std::string noteCrashFile(it->second + "/tmp/kit-crashed");
-                int noteCrashFD = open(noteCrashFile.c_str(), O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
-                if (noteCrashFD < 0)
-                    LOG_ERR("Couldn't create file: " << noteCrashFile << " due to error: " << strerror(errno));
+                    std::string noteCrashFile(it->second + "/tmp/kit-crashed");
+                    int noteCrashFD = open(noteCrashFile.c_str(), O_CREAT | O_TRUNC | O_WRONLY,
+                                           S_IRUSR | S_IWUSR);
+                    if (noteCrashFD < 0)
+                        LOG_ERR("Couldn't create file: " << noteCrashFile
+                                                         << " due to error: " << strerror(errno));
+                    else
+                        close(noteCrashFD);
+                }
+                else if (WTERMSIG(status) == SIGKILL)
+                {
+                    // TODO differentiate with docker
+                    if (info.si_code == SI_KERNEL)
+                    {
+                        ++oomKilledCount;
+                        LOG_WRN("Child " << exitedChildPid << " was killed by OOM, with status "
+                                         << status);
+                    }
+                    else
+                    {
+                        ++killedCount;
+                        LOG_WRN("Child " << exitedChildPid << " was killed, with status "
+                                         << status);
+                    }
+                }
                 else
-                    close(noteCrashFD);
+                {
+                    LOG_ERR("Child " << exitedChildPid << " has exited, with status " << status);
+                }
             }
 
             LOG_INF("Child " << exitedChildPid << " has exited, will remove its jail [" << it->second << "].");
@@ -313,7 +352,7 @@ static void cleanupChildren()
         }
         else
         {
-            LOG_ERR("Unknown child " << exitedChildPid << " has exited");
+            LOG_ERR("Unknown child " << exitedChildPid << " has exited, with status " << status);
         }
     }
 
@@ -327,12 +366,14 @@ static void cleanupChildren()
                                           << childJails.size() << " left: " << oss.str());
     }
 
-    if (segFaultCount)
+    if (segFaultCount || killedCount || oomKilledCount)
     {
         if (WSHandler)
         {
             std::stringstream stream;
-            stream << "segfaultcount " << segFaultCount << '\n';
+            stream << "segfaultcount=" << segFaultCount << ' ' << "killedcount=" << killedCount
+                    << ' ' << "oomkilledcount=" << oomKilledCount << '\n';
+
             int ret = WSHandler->sendMessage(stream.str());
             if (ret == -1)
             {
@@ -515,7 +556,7 @@ static void printArgumentHelp()
 }
 
 extern "C" {
-    static void wakeupPoll(uint32_t /*pid*/)
+    static void wakeupPoll(int /*pid*/)
     {
         if (ForKitPoll)
             ForKitPoll->wakeup();
@@ -644,9 +685,23 @@ int forkit_main(int argc, char** argv)
     {
         logProperties["path"] = std::string(logFilename);
     }
+    const bool logToFileUICmd = std::getenv("COOL_LOGFILE_UICMD");
+    const char* logFilenameUICmd = std::getenv("COOL_LOGFILENAME_UICMD");
+    std::map<std::string, std::string> logPropertiesUICmd;
+    if (logToFileUICmd && logFilenameUICmd)
+    {
+        logPropertiesUICmd["path"] = std::string(logFilenameUICmd);
+    }
 
     LogLevelStartup = logLevelStartup ? logLevelStartup : "trace";
-    Log::initialize("frk", LogLevelStartup, logColor != nullptr, logToFile, logProperties);
+    Log::initialize("frk", LogLevelStartup, logColor != nullptr, logToFile, logProperties, logToFileUICmd, logPropertiesUICmd);
+
+    if (logToFileUICmd)
+    {
+        const bool mergeUiCmd = std::getenv("COOL_LOG_UICMD_MERGE");
+        const bool logTimeEndOfMergedUiCmd = std::getenv("COOL_LOG_UICMD_END_TIME");
+        Log::setUILogMergeInfo(mergeUiCmd, logTimeEndOfMergedUiCmd);
+    }
 
     LogLevel = logLevel ? logLevel : "trace";
     if (LogLevel != LogLevelStartup)
@@ -803,8 +858,8 @@ int forkit_main(int argc, char** argv)
     {
         // Parse the configuration.
         const auto conf = std::getenv("COOL_CONFIG");
-        config::initialize(std::string(conf ? conf : std::string()));
-        EnableExperimental = config::getBool("experimental_features", false);
+        ConfigUtil::initialize(std::string(conf ? conf : std::string()));
+        EnableExperimental = ConfigUtil::getBool("experimental_features", false);
     }
 
     Util::setThreadName("forkit");

@@ -19,16 +19,14 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
-#include <atomic>
 #include <limits>
 #include <mutex>
-#include <ratio>
 #include <set>
 #include <sstream>
 #include <string>
 #include <map>
+#include <string_view>
 #include <utility>
-#include <inttypes.h>
 #include <cctype>
 
 #include <memory.h>
@@ -95,14 +93,14 @@ namespace Util
         unsigned getNext();
 
         /// Generate an array of random characters.
-        std::vector<char> getBytes(const size_t length);
+        std::vector<char> getBytes(size_t length);
 
         /// Generate a string of random characters.
-        std::string getHexString(const size_t length);
+        std::string getHexString(size_t length);
 
         /// Generates a random string suitable for
         /// file/directory names.
-        std::string getFilename(const size_t length);
+        std::string getFilename(size_t length);
     }
 
     /// A utility class to track relative time from some arbitrary
@@ -157,106 +155,6 @@ namespace Util
         uint64_t _startSys;
     };
 
-    // Time-weighted average values of arbitrary unit
-    class TimeAverage
-    {
-    public:
-        typedef std::chrono::steady_clock::time_point time_point;
-
-    private:
-        time_point _t0; // first timestamp
-        time_point _t1; // last timestamp
-        double _v1; // last value, arbitrary unit
-        double _area; // complete area value * (_t1-_t0)
-
-    public:
-        // default ctor without value initialization
-        constexpr TimeAverage()
-            : _v1(0)
-            , _area(0)
-        {
-        }
-
-        // ctor with value initialization
-        // @param t initial time-point
-        // @param v initial value in arbitrary unit
-        constexpr TimeAverage(time_point t, double v)
-            : _t0(t)
-            , _t1(t)
-            , _v1(v)
-            , _area(0.0)
-        {
-        }
-
-        // Returns true if initialized via reset() or ctor
-        constexpr bool initialized() const
-        {
-            return _t0.time_since_epoch() != time_point::duration::zero();
-        }
-
-        // initialize instance with given values
-        // @param t initial time-point
-        // @param v initial value in arbitrary unit
-        void reset(time_point t, double v)
-        {
-            _t0 = t;
-            _t1 = t;
-            _v1 = v;
-            _area = 0.0;
-        }
-
-        // Move endTime() to given time-point and adjust startTime() maintaining duration()
-        // @param t new endTime()
-        void moveTo(time_point t)
-        {
-            _t0 += t - _t1;
-            _t1 = t;
-        }
-
-        // Adds a value of arbitrary unit at given time-point, returns new average value of arbitrary unit
-        // May reset() instance and returns `v` if not yet initialized()
-        // @param t new added time-point
-        // @param v new added value in arbitrary unit
-        double add(time_point t, double v)
-        {
-            if (!initialized())
-            {
-                reset(t, v);
-                return v;
-            }
-            else
-            {
-                // time*value area accumulation
-                const std::chrono::duration<double> dt1 = std::chrono::duration<double>(t - _t1);
-                // area(rectangle + triangle)
-                // _area += dt1.count() * _v1 + (dt1.count() * (v - _v1) * 0.5);
-                _area += dt1.count() * 0.5 * (_v1 + v);
-                _t1 = t;
-                _v1 = v;
-                return average();
-            }
-        }
-
-        // Returns average value in arbitrary unit
-        constexpr double average() const
-        {
-            const double dt = duration();
-            return dt > std::numeric_limits<double>::epsilon() ? _area / dt : _v1;
-        }
-
-        // Returns last value in arbitrary unit
-        constexpr double last() const { return _v1; }
-        // Returns last time-point
-        constexpr std::chrono::steady_clock::time_point lastTime() const { return _t1; }
-        // Returns first time-point
-        constexpr std::chrono::steady_clock::time_point startTime() const { return _t0; }
-        // Returns duration in seconds
-        constexpr double duration() const
-        {
-            return std::chrono::duration<double>(_t1 - _t0).count();
-        }
-    };
-
     class DirectoryCounter
     {
         void *_tasks;
@@ -308,8 +206,7 @@ namespace Util
     }
 
     /// Hex to unsigned char
-    template <typename T>
-    bool dataFromHexString(const std::string& hexString, T& data)
+    template <typename T> bool dataFromHexString(const std::string_view hexString, T& data)
     {
         if (hexString.length() % 2 != 0)
         {
@@ -338,10 +235,67 @@ namespace Util
         ~ReferenceHolder() { _count--; }
     };
 
-    /// Encode an integral ID into a string, with padding support.
-    std::string encodeId(const std::uint64_t number, const int padding = 5);
-    /// Decode an integral ID from a string.
-    std::uint64_t decodeId(const std::string& str);
+    /// Hex-encode an integral ID into a buffer, with padding support.
+    inline std::string_view encodeId(char* buffer, std::size_t size, const std::uint64_t number,
+                                     int width, char pad = '0')
+    {
+        // Skip leading (high-order) zeros, if any.
+        int highNibble = (2 * sizeof(number) - 1) * 4;
+        while ((number & (0xfUL << highNibble)) == 0)
+        {
+            highNibble -= 4;
+            if (highNibble <= 0)
+                break;
+        }
+
+        // Pad, if necessary.
+        highNibble = std::min<int>(size - 1, highNibble / 4) * 4;
+        width = std::min<int>(size, width);
+        int outIndex = 0;
+        const int hexBytes = (highNibble / 4) + 1;
+        for (; width > hexBytes; --width)
+        {
+            buffer[outIndex++] = pad;
+        }
+
+        // Hexify the remaining, if any.
+        constexpr const char* const Hex = "0123456789abcdef";
+        while (highNibble >= 0)
+        {
+            const auto byte = static_cast<unsigned char>((number >> highNibble) & 0xf);
+            buffer[outIndex++] = (Hex[byte >> 4] << 8) | Hex[byte & 0xf];
+            highNibble -= 4;
+        }
+
+        // Return a reference to the given buffer.
+        return std::string_view(buffer, outIndex);
+    }
+
+    /// Hex-encode an integral ID into a string, with padding support.
+    inline std::string encodeId(const std::uint64_t number, int width = 5, char pad = '0')
+    {
+        char buffer[32];
+        return std::string(encodeId(buffer, sizeof(buffer), number, width, pad));
+    }
+
+    /// Hex-encode an integral ID into a stream, with padding support.
+    inline std::ostringstream& encodeId(std::ostringstream& oss, const std::uint64_t number,
+                                        int width = 5, char pad = '0')
+    {
+        char buffer[32];
+        oss << encodeId(buffer, sizeof(buffer), number, width, pad);
+        return oss;
+    }
+
+    /// Decode the hex-string into an ID. The reverse of encodeId().
+    inline std::uint64_t decodeId(const std::string_view str)
+    {
+        std::uint64_t id = 0;
+        std::stringstream ss;
+        ss << std::hex << str;
+        ss >> id;
+        return id;
+    }
 
     bool windowingAvailable();
 
@@ -371,7 +325,7 @@ namespace Util
     }
 
     /// Print given number of bytes in human-understandable form (KB,MB, etc.)
-    std::string getHumanizedBytes(unsigned long nBytes);
+    std::string getHumanizedBytes(unsigned long bytes);
 
     /// Returns the total physical memory (in kB) available in the system
     size_t getTotalSystemMemoryKb();
@@ -386,10 +340,10 @@ namespace Util
     std::size_t getCGroupMemSoftLimit();
 
     /// Returns the process PSS in KB (works only when we have perms for /proc/pid/smaps).
-    size_t getMemoryUsagePSS(const pid_t pid);
+    size_t getMemoryUsagePSS(pid_t pid);
 
     /// Returns the process RSS in KB.
-    size_t getMemoryUsageRSS(const pid_t pid);
+    size_t getMemoryUsageRSS(pid_t pid);
 
     /// Returns the number of current threads, or zero on error
     size_t getCurrentThreadCount();
@@ -402,12 +356,15 @@ namespace Util
     /// returns them as a pair in the same order
     std::pair<size_t, size_t> getPssAndDirtyFromSMaps(FILE* file);
 
-    size_t getCpuUsage(const pid_t pid);
+    /// Returns the total PSS usage of the process and all its children.
+    std::size_t getProcessTreePss(pid_t pid);
 
-    size_t getStatFromPid(const pid_t pid, int ind);
+    size_t getCpuUsage(pid_t pid);
+
+    size_t getStatFromPid(pid_t pid, int ind);
 
     /// Sets priorities for a given pid & the current thread
-    void setProcessAndThreadPriorities(const pid_t pid, int prio);
+    void setProcessAndThreadPriorities(pid_t pid, int prio);
 
     /// Replace substring @a in string @s with string @b.
     std::string replace(std::string s, const std::string& a, const std::string& b);
@@ -443,10 +400,7 @@ namespace Util
 
     std::string getVersionJSON(bool enableExperimental, const std::string& timezone);
 
-    /// Return a string that is unique across processes and calls.
-    std::string UniqueId();
-
-    inline unsigned short hexFromByte(unsigned char byte)
+    inline constexpr unsigned short hexFromByte(unsigned char byte)
     {
         constexpr auto hex = "0123456789ABCDEF";
         return (hex[byte >> 4] << 8) | hex[byte & 0xf];
@@ -472,9 +426,9 @@ namespace Util
         return bytesToHexString(reinterpret_cast<const uint8_t*>(data), size);
     }
 
-    inline std::string bytesToHexString(const std::string& s)
+    inline std::string bytesToHexString(const std::string_view str)
     {
-        return bytesToHexString(s.c_str(), s.size());
+        return bytesToHexString(str.data(), str.size());
     }
 
     inline int hexDigitFromChar(char c)
@@ -516,9 +470,9 @@ namespace Util
     }
 
     // for debugging validation only.
-    inline bool isValidUtf8(const std::string& s)
+    inline bool isValidUtf8(const std::string_view str)
     {
-        return Util::isValidUtf8((unsigned char *)s.c_str(), s.size()) > s.size();
+        return Util::isValidUtf8((unsigned char*)str.data(), str.size()) > str.size();
     }
 #endif
 
@@ -546,9 +500,9 @@ namespace Util
         return hexStringToBytes(reinterpret_cast<const uint8_t*>(data), size);
     }
 
-    inline std::string hexStringToBytes(const std::string& s)
+    inline std::string hexStringToBytes(const std::string_view str)
     {
-        return hexStringToBytes(s.c_str(), s.size());
+        return hexStringToBytes(str.data(), str.size());
     }
 
     /// Dump a line of data as hex.
@@ -653,43 +607,16 @@ namespace Util
 
     size_t findInVector(const std::vector<char>& tokens, const char *cstring, std::size_t offset = 0);
 
-    /// Trim spaces from the left. Just spaces.
-    inline std::string& ltrim(std::string& s)
-    {
-        const size_t pos = s.find_first_not_of(' ');
-        if (pos != std::string::npos)
-        {
-            s = s.substr(pos);
-        }
-
-        return s;
-    }
-
-    /// Trim spaces from the left and copy. Just spaces.
-    inline std::string ltrimmed(const std::string& s)
-    {
-        const size_t pos = s.find_first_not_of(' ');
-        if (pos != std::string::npos)
-        {
-            return s.substr(pos);
-        }
-
-        return s;
-    }
-
-    inline std::string& trim(std::string& s, const char ch)
+    /// Trim trailing characters (on the right).
+    inline std::string_view trim(const std::string_view s, const char ch)
     {
         const size_t last = s.find_last_not_of(ch);
         if (last != std::string::npos)
         {
-            s = s.substr(0, last + 1);
-        }
-        else
-        {
-            s.clear();
+            return s.substr(0, last + 1);
         }
 
-        return s;
+        return std::string_view();
     }
 
     /// Trim spaces from both left and right. Just spaces.
@@ -1124,22 +1051,30 @@ int main(int argc, char**argv)
     }
 
     /// Split a string in two at the delimiter, removing it.
-    inline
-    std::pair<std::string, std::string> split(const char* s, const int length, const char delimiter = ' ', bool removeDelim = true)
+    inline std::pair<std::string_view, std::string_view>
+    split(const char* s, const int length, const char delimiter = ' ', bool removeDelim = true)
     {
         const size_t size = getDelimiterPosition(s, length, delimiter);
 
-        std::string after;
-        int after_pos = size + (removeDelim? 1: 0);
+        std::string_view after;
+        const int after_pos = size + (removeDelim ? 1 : 0);
         if (after_pos < length)
-            after = std::string(s + after_pos, length - after_pos);
+            after = std::string_view(s + after_pos, length - after_pos);
 
-        return std::make_pair(std::string(s, size), after);
+        return std::make_pair(std::string_view(s, size), after);
     }
 
     /// Split a string in two at the delimiter, removing it.
-    inline
-    std::pair<std::string, std::string> split(const std::string& s, const char delimiter = ' ', bool removeDelim = true)
+    inline std::pair<std::string, std::string>
+    split(const std::string&& str, const char delimiter = ' ', bool removeDelim = true)
+    {
+        const auto& pair = split(str.data(), str.size(), delimiter, removeDelim);
+        return std::make_pair(std::string(pair.first), std::string(pair.second));
+    }
+
+    /// Split a string in two at the delimiter, removing it.
+    inline std::pair<std::string_view, std::string_view>
+    split(const std::string& s, const char delimiter = ' ', bool removeDelim = true)
     {
         return split(s.c_str(), s.size(), delimiter, removeDelim);
     }
@@ -1195,34 +1130,12 @@ int main(int argc, char**argv)
     /// All components are optional, depending on what the URL represents (can be a unix path).
     std::tuple<std::string, std::string, std::string, std::string> splitUrl(const std::string& url);
 
-    /// Check for the URI scheme validity.
-    /// For now just a basic sanity check, can be extended if necessary.
-    bool isValidURIScheme(const std::string& scheme);
-
-    /// Check for the URI host validity.
-    /// For now just a basic sanity check, can be extended if necessary.
-    bool isValidURIHost(const std::string& host);
-
     /// Remove all but scheme://hostname:port/ from a URI.
     std::string trimURI(const std::string& uri);
 
     /// Cleanup a filename replacing anything potentially problematic
     /// either for a URL or for a file path
     std::string cleanupFilename(const std::string &filename);
-
-    /// Anonymize a sensitive string to avoid leaking it.
-    /// Called on strings to be logged or exposed.
-    std::string anonymize(const std::string& text, const std::uint64_t nAnonymizationSalt);
-
-    /// Sets the anonymized version of a given plain-text string.
-    /// After this, 'anonymize(plain)' will return 'anonymized'.
-    void mapAnonymized(const std::string& plain, const std::string& anonymized);
-
-    /// Clears the shared state of mapAnonymized() / anonymize().
-    void clearAnonymized();
-
-    /// Anonymize the basename of filenames only, preserving the path and extension.
-    std::string anonymizeUrl(const std::string& url, const std::uint64_t nAnonymizationSalt);
 
     /// Return true if the subject matches in given set. It uses regex
     /// Mainly used to match WOPI hosts patterns
@@ -1310,43 +1223,6 @@ int main(int argc, char**argv)
         std::set<std::string> _denied;
     };
 
-    /// A logical constant that is allowed to initialize
-    /// exactly once and checks usage before initialization.
-    template <typename T>
-    class RuntimeConstant
-    {
-        T _value;
-        std::atomic<bool> _initialized;
-
-    public:
-        RuntimeConstant()
-            : _value()
-            , _initialized(false)
-        {
-        }
-
-        /// Use a compile-time const instead.
-        RuntimeConstant(const T& value) = delete;
-
-        const T& get()
-        {
-            if (_initialized)
-            {
-                return _value;
-            }
-
-            throw std::runtime_error("RuntimeConstant instance read before being initialized.");
-        }
-
-        void set(const T& value)
-        {
-            assert(!_initialized);
-
-            _initialized = true;
-            _value = value;
-        }
-    };
-
     /// Simple backtrace capture
     /// Use case, e.g. streaming up to 20 frames to log: `LOG_TRC( Util::Backtrace::get(20) );`
     /// Enabled for !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
@@ -1376,7 +1252,7 @@ int main(int argc, char**argv)
 
     public:
         /// Produces a backtrace instance from current stack position
-        Backtrace(const int maxFrames = 50, const int skip = 1);
+        Backtrace(int maxFrames = 50, int skip = 1);
 
         /// Produces a backtrace instance from current stack position
         static Backtrace get(const int maxFrames = 50, const int skip = 2)
@@ -1478,7 +1354,14 @@ int main(int argc, char**argv)
      */
     bool isFuzzing();
 
-    constexpr bool isMobileApp() { return MOBILEAPP; }
+    constexpr bool isMobileApp()
+    {
+#ifdef MOBILEAPP
+        return MOBILEAPP;
+#else
+        return false;
+#endif
+    }
 
     void setKitInProcess(bool value);
     bool isKitInProcess();
@@ -1510,14 +1393,14 @@ int main(int argc, char**argv)
      * Converts vector of strings to map. Strings should have formed like this: key + delimiter + value.
      * In case of a misformed string or zero length vector, passes that item and warns the developer.
      */
-    std::map<std::string, std::string> stringVectorToMap(const std::vector<std::string>& strvector, const char delimiter);
+    std::map<std::string, std::string> stringVectorToMap(const std::vector<std::string>& strvector, char delimiter);
 
     // If OS is not mobile, it must be Linux.
     std::string getLinuxVersion();
 
     /// Convert a string to 32-bit signed int.
     /// Returns the parsed value and a boolean indicating success or failure.
-    inline std::pair<std::int32_t, bool> i32FromString(const std::string& input)
+    inline std::pair<std::int32_t, bool> i32FromString(const std::string_view input)
     {
         const char* str = input.data();
         char* endptr = nullptr;
@@ -1528,7 +1411,7 @@ int main(int argc, char**argv)
 
     /// Convert a string to 32-bit signed int. On failure, returns the default
     /// value, and sets the bool to false (to signify that parsing had failed).
-    inline std::pair<std::int32_t, bool> i32FromString(const std::string& input,
+    inline std::pair<std::int32_t, bool> i32FromString(const std::string_view input,
                                                        const std::int32_t def)
     {
         const auto pair = i32FromString(input);
@@ -1537,7 +1420,7 @@ int main(int argc, char**argv)
 
     /// Convert a string to 64-bit unsigned int.
     /// Returns the parsed value and a boolean indicating success or failure.
-    inline std::pair<std::uint64_t, bool> u64FromString(const std::string& input)
+    inline std::pair<std::uint64_t, bool> u64FromString(const std::string_view input)
     {
         const char* str = input.data();
         char* endptr = nullptr;
@@ -1548,7 +1431,7 @@ int main(int argc, char**argv)
 
     /// Convert a string to 64-bit unsigned int. On failure, returns the default
     /// value, and sets the bool to false (to signify that parsing had failed).
-    inline std::pair<std::uint64_t, bool> u64FromString(const std::string& input,
+    inline std::pair<std::uint64_t, bool> u64FromString(const std::string_view input,
                                                         const std::uint64_t def)
     {
         const auto pair = u64FromString(input);
@@ -1573,15 +1456,15 @@ int main(int argc, char**argv)
     }
 
     /// Case insensitive comparison of two strings.
-    template <std::size_t N> inline bool iequal(const std::string& lhs, const char (&rhs)[N])
+    template <std::size_t N> inline bool iequal(const std::string_view lhs, const char (&rhs)[N])
     {
-        return iequal(lhs.c_str(), lhs.size(), rhs, N - 1); // Minus null termination.
+        return iequal(lhs.data(), lhs.size(), rhs, N - 1); // Minus null termination.
     }
 
     /// Case insensitive comparison of two strings.
-    inline bool iequal(const std::string& lhs, const std::string& rhs)
+    inline bool iequal(const std::string_view lhs, const std::string_view rhs)
     {
-        return iequal(lhs.c_str(), lhs.size(), rhs.c_str(), rhs.size());
+        return iequal(lhs.data(), lhs.size(), rhs.data(), rhs.size());
     }
 
     /// Convert a vector to a string. Useful for conversion in templates.
@@ -1681,6 +1564,9 @@ int main(int argc, char**argv)
     /// static instances (i.e. anything registered with `atexit' or `on_exit').
     // coverity[+kill]
     void forcedExit(int code) __attribute__ ((__noreturn__));
+
+    /// Returns the result of malloc_info, which is an XML string with all the arenas.
+    std::string getMallocInfo();
 
     // std::size isn't available on our android baseline so use this
     // solution as a workaround

@@ -1,5 +1,3 @@
-if ENABLE_CYPRESS
-
 export NODE_PATH=$(abs_builddir)/node_modules
 
 V = $(if $(verbose),,@)
@@ -200,7 +198,7 @@ define start_coolwsd_instance
 			--o:ssl.key_file_path="$(abs_top_srcdir)/etc/key.pem" \
 			--o:ssl.ca_file_path="$(abs_top_srcdir)/etc/ca-chain.cert.pem" \
 			--o:admin_console.username=admin --o:admin_console.password=admin \
-			--o:logging.file[@enable]=true --o:logging.level=trace \
+			--o:logging.file[@enable]=true --o:logging.level=debug \
 			--o:logging.disabled_areas="" --o:welcome.enable=false \
 			--o:user_interface.mode=$(USER_INTERFACE) \
 			--o:accessibility.enable=$(A11Y_ENABLE) \
@@ -789,5 +787,4 @@ else
 check-local:
 	$(error CypressError: Can't find LibreOffice core installation!)
 
-endif
 endif

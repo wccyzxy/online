@@ -14,7 +14,15 @@ endif
 
 else
 
-SUBDIRS = . browser test cypress_test
+SUBDIRS = . browser
+
+if ENABLE_TESTS
+SUBDIRS += test
+endif
+
+if ENABLE_CYPRESS
+SUBDIRS += cypress_test
+endif
 
 export ENABLE_DEBUG
 
@@ -48,7 +56,6 @@ man_MANS = man/coolwsd.1 \
 dist_doc_DATA = wsd/README.md \
                 wsd/README.vars \
                 wsd/protocol.txt \
-                wsd/reference.md \
                 wsd/metrics.txt \
                 THIRDPARTYLICENSES
 
@@ -120,13 +127,14 @@ shared_sources = common/FileUtil.cpp \
                  common/Unit.cpp \
                  common/Uri.cpp \
                  common/Util.cpp \
-                 common/Util-desktop.cpp \
+                 common/Util-server.cpp \
                  common/ConfigUtil.cpp \
                  common/Authorization.cpp \
                  common/CommandControl.cpp \
                  common/Simd.cpp \
                  common/CoolMount.cpp \
                  kit/KitQueue.cpp \
+                 kit/LogUI.cpp \
                  net/DelaySocket.cpp \
                  net/HttpRequest.cpp \
                  net/HttpHelper.cpp \
@@ -152,6 +160,7 @@ coolwsd_sources = common/Crypto.cpp \
                   wsd/ProxyProtocol.cpp \
                   wsd/ProxyRequestHandler.cpp \
                   wsd/QuarantineUtil.cpp \
+                  wsd/RemoteConfig.cpp \
                   wsd/RequestDetails.cpp \
                   wsd/RequestVettingStation.cpp \
                   wsd/ServerAuditUtil.cpp \
@@ -190,7 +199,7 @@ connect_SOURCES = tools/Connect.cpp \
                   common/Protocol.cpp \
                   common/StringVector.cpp \
                   common/Util.cpp \
-                  common/Util-desktop.cpp
+                  common/Util-server.cpp
 
 lokitclient_SOURCES = common/Log.cpp \
                       common/DummyTraceEventEmitter.cpp \
@@ -199,7 +208,7 @@ lokitclient_SOURCES = common/Log.cpp \
                       common/StringVector.cpp \
                       common/TraceEvent.cpp \
                       common/Util.cpp \
-                      common/Util-desktop.cpp
+                      common/Util-server.cpp
 
 noinst_LIBRARIES = libsimd.a
 libsimd_a_SOURCES = kit/DeltaSimd.c
@@ -288,7 +297,7 @@ clientnb_SOURCES = net/clientnb.cpp \
                    common/Log.cpp \
                    common/StringVector.cpp \
                    common/Util.cpp \
-                   common/Util-desktop.cpp
+                   common/Util-server.cpp
 
 coolmount_SOURCES = tools/mount.cpp \
                     common/CoolMount.cpp
@@ -297,30 +306,31 @@ coolmap_SOURCES = tools/map.cpp
 
 coolbench_SOURCES = tools/Benchmark.cpp \
                     common/DummyTraceEventEmitter.cpp \
-		    common/Log.cpp \
+                    common/Log.cpp \
                     common/StringVector.cpp \
                     common/Util.cpp \
-                    common/Util-desktop.cpp \
+                    common/Util-server.cpp \
                     common/Simd.cpp
 coolbench_LDADD = libsimd.a
 
 coolconvert_SOURCES = tools/Tool.cpp
 
 coolstress_TDOC_CPPFLAGS = -DTDOC=\"$(abs_top_srcdir)/test/data\"
-coolstress_CPPFLAGS = ${coolstress_TDOC_CPPFLAGS} ${include_paths}
+coolstress_CPPFLAGS = ${coolstress_TDOC_CPPFLAGS} ${include_paths} \
+			$(AM_CPPFLAGS)
 coolstress_SOURCES = tools/Stress.cpp \
                      common/DummyTraceEventEmitter.cpp \
                      $(shared_sources)
 
 coolconfig_SOURCES = tools/Config.cpp \
-		     tools/ConfigMigrationAssistant.cpp \
-		     common/DummyTraceEventEmitter.cpp \
-		     common/ConfigUtil.cpp \
-		     common/Crypto.cpp \
-		     common/Log.cpp \
-		     common/StringVector.cpp \
-		     common/Util.cpp \
-		     common/Util-desktop.cpp
+                    tools/ConfigMigrationAssistant.cpp \
+                    common/ConfigUtil.cpp \
+                    common/Crypto.cpp \
+                    common/DummyTraceEventEmitter.cpp \
+                    common/Log.cpp \
+                    common/StringVector.cpp \
+                    common/Util-server.cpp \
+                    common/Util.cpp
 
 coolsocketdump_SOURCES = tools/WebSocketDump.cpp \
 			 common/DummyTraceEventEmitter.cpp \
@@ -337,10 +347,12 @@ wsd_headers = wsd/Admin.hpp \
               wsd/Exceptions.hpp \
               wsd/FileServer.hpp \
               wsd/HostUtil.hpp \
+              wsd/Process.hpp \
               wsd/ProofKey.hpp \
               wsd/ProxyProtocol.hpp \
               wsd/ProxyRequestHandler.hpp \
               wsd/QuarantineUtil.hpp \
+              wsd/RemoteConfig.hpp \
               wsd/RequestDetails.hpp \
               wsd/RequestVettingStation.hpp \
               wsd/SenderQueue.hpp \
@@ -357,7 +369,8 @@ wsd_headers = wsd/Admin.hpp \
               wsd/wopi/WopiProxy.hpp \
               wsd/wopi/WopiStorage.hpp
 
-shared_headers = common/Common.hpp \
+shared_headers = common/Anonymizer.hpp \
+                 common/Common.hpp \
                  common/CharacterConverter.hpp \
                  common/Clipboard.hpp \
                  common/Crypto.hpp \
@@ -391,6 +404,7 @@ shared_headers = common/Common.hpp \
                  common/ThreadPool.hpp \
                  common/Watchdog.hpp \
                  kit/KitQueue.hpp \
+                 kit/LogUI.hpp \
                  net/AsyncDNS.hpp \
                  net/Buffer.hpp \
                  net/DelaySocket.hpp \
@@ -434,10 +448,10 @@ noinst_HEADERS = $(wsd_headers) $(shared_headers) $(kit_headers) \
                  test/helpers.hpp
 
 GIT_BRANCH := $(shell git symbolic-ref --short HEAD)
-GIT_HASH := $(shell git log -1 --format=%h)
+GIT_HASH := $(shell git log -1 --format=%h --abbrev=10)
 
 dist-hook:
-	git log -1 --format=%h > $(distdir)/dist_git_hash 2> /dev/null || rm $(distdir)/dist_git_hash
+	git log -1 --format=%h --abbrev=10 > $(distdir)/dist_git_hash 2> /dev/null || rm $(distdir)/dist_git_hash
 	mkdir -p $(distdir)/bundled/include/LibreOfficeKit/
 	cp @LOKIT_PATH@/LibreOfficeKit/LibreOfficeKit.h \
 	   @LOKIT_PATH@/LibreOfficeKit/LibreOfficeKit.hxx \
@@ -483,10 +497,10 @@ else
 # Use coolwsd to cleanup jails, if any. If it fails, we may have a broken/old coolwsd binary, remove it to rebuild.
 # A CI box may switch branches without cleaning up the binaries, if coolwsd from a broken branch is used here
 # it will fail all subsequent builds, until it's rebuilt from the new branch. So removing coolwsd after failing is needed.
-CLEANUP_COMMAND=if test -s ./coolwsd; then echo "Cleaning up..." && ./coolwsd --disable-cool-user-checking --cleanup --o:logging.level=trace || rm -f ./coolwsd; fi
+CLEANUP_COMMAND=if test -s ./coolwsd -a -x ./coolwsd; then echo "Cleaning up..." && ./coolwsd --disable-cool-user-checking --cleanup --o:logging.level=trace || rm -f ./coolwsd; fi
 endif
 
-CLEANUP_COVERAGE=rm -rf ${abs_top_srcdir}/gcov; find . -iname "*.gc??" -delete
+CLEANUP_COVERAGE=rm -rf ${abs_top_srcdir}/gcov; find . -iname "*.gcda" -delete
 
 if HAVE_LO_PATH
 
@@ -565,44 +579,50 @@ run: setup-wsd
 	fi
 	$(ENABLE_NAMESPACE) ./coolwsd $(COMMON_PARAMS) \
 			--o:logging.file[@enable]=${OUTPUT_TO_FILE} --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=${OUTPUT_TO_FILE} \
 			--o:trace_event[@enable]=true
 
 if ENABLE_DEBUG
 run-one: setup-wsd
 	$(ENABLE_NAMESPACE) ./coolwsd $(COMMON_PARAMS) \
 			--o:logging.file[@enable]=true --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=true \
 			--singlekit
 
 run-inproc: setup-wsd
 	@echo "Launching coolwsd-inproc"
 	./coolwsd-inproc $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=true --o:logging.level=trace
+			--o:logging.file[@enable]=true --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=true
 
 run-massif-inproc: setup-wsd
 	@echo "Launching coolwsd under valgrind for single process"
 	$(ENABLE_NAMESPACE) valgrind --tool=massif --num-callers=64 --trace-children=no -v \
 		./coolwsd-inproc $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=trace
+			--o:logging.file[@enable]=false --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=false
 
 run-heaptrack-inproc: setup-wsd
 	@echo "Launching coolwsd under heaptrack for single process"
 	$(ENABLE_NAMESPACE) heaptrack \
 		./coolwsd-inproc $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=trace
+			--o:logging.file[@enable]=false --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=false
 endif
 
 sync-writer:
-	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/cool.html?file_path=file://$(abs_top_srcdir)/test/data/hello-world.odt"
+	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/debug.html?file_path=/$(abs_top_srcdir)/test/samples/writer-edit.fodt"
 
 sync-calc:
-	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/cool.html?file_path=file://$(abs_top_srcdir)/test/data/hello-world.ods"
+	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/debug.html?file_path=/$(abs_top_srcdir)/test/samples/calc-edit.ods"
 
 sync-impress:
-	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/cool.html?file_path=file://$(abs_top_srcdir)/test/data/hello-world.odp"
+	browser-sync start --config browsersync-config.js --startPath "browser/96c23f663/debug.html?file_path=/$(abs_top_srcdir)/test/samples/impress-edit.fodp"
 
 run-trace: setup-wsd
 	$(ENABLE_NAMESPACE) ./coolwsd $(COMMON_PARAMS) \
 			--o:logging.file[@enable]=false --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=false \
 			--o:trace[@enable]=true --o:trace.path=${builddir}/trace.txt.gz \
 			--o:trace.outgoing.record=false
 
@@ -610,25 +630,29 @@ run-valgrind: setup-wsd
 	@echo "Launching coolwsd under valgrind (but not forkit/coolkit, yet)"
 	$(ENABLE_NAMESPACE) valgrind --tool=memcheck --trace-children=no -v --read-var-info=yes \
 		./coolwsd $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=trace
+			--o:logging.file[@enable]=false --o:logging.level=trace \
+			--o:logging_ui_cmd.file[@enable]=false
 
 run-gdb: setup-wsd
 	@echo "Launching coolwsd under gdb"
 	$(ENABLE_NAMESPACE) $(RUN_GDB) \
 		./coolwsd $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=error
+			--o:logging.file[@enable]=false --o:logging.level=error \
+			--o:logging_ui_cmd.file[@enable]=false
 
 run-callgrind: setup-wsd
 	@echo "Launching coolwsd under valgrind's callgrind"
 	$(ENABLE_NAMESPACE) valgrind --tool=callgrind --simulate-cache=yes --dump-instr=yes --num-callers=50 --error-limit=no --trace-children=yes \
 		./coolwsd $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=error
+			--o:logging.file[@enable]=false --o:logging.level=error \
+			--o:logging_ui_cmd.file[@enable]=false
 
 run-strace: setup-wsd
 	@echo "Launching coolwsd under strace"
 	$(ENABLE_NAMESPACE) strace -o strace.log -f -tt -s 256 \
 		./coolwsd $(COMMON_PARAMS) \
-			--o:logging.file[@enable]=false --o:logging.level=error
+			--o:logging.file[@enable]=false --o:logging.level=error \
+			--o:logging_ui_cmd.file[@enable]=false
 
 else
 
@@ -722,13 +746,13 @@ browser/node_modules: browser/package.json browser/archived-packages
 	@cd browser && npm install
 
 eslint: browser/node_modules
-	@make -C browser eslint
+	@$(MAKE) -C browser eslint
 
 prettier: browser/node_modules
-	@make -C browser prettier
+	@$(MAKE) -C browser prettier
 
 prettier-write: browser/node_modules
-	@make -C browser prettier-write
+	@$(MAKE) -C browser prettier-write
 
 install-exec-hook:
 	cd $(DESTDIR)$(bindir) && \

@@ -59,20 +59,6 @@ function isTransformSupported(aNodeInfo: AnimateTransformNodeInfo) {
 	);
 }
 
-function isTransitionFilterSupported(
-	aNodeInfo: TransitionFilterNodeInfo,
-	isGlSupported: boolean,
-) {
-	if (!aNodeInfo.transitionType) {
-		console.error('slideshow: missing transition type');
-		return false;
-	}
-
-	return isGlSupported
-		? true // all supported
-		: AnimatedElement.SupportedTransitionFilters.has(aNodeInfo.transitionType);
-}
-
 function createAnimationTree(
 	aAnimationRoot: AnimationNodeInfo,
 	aNodeContext: NodeContext,
@@ -140,15 +126,23 @@ function createAnimationNode(
 				return null;
 			}
 		case AnimationNodeType.AnimateMotion:
-			window.app.console.log(
-				'createAnimationNode: AnimateMotion not implemented',
+			aCreatedNode = new AnimationPathMotionNode(
+				aNodeInfo,
+				aParentNode,
+				aNodeContext,
 			);
-			return null;
+			// window.app.console.log(
+			// 	'createAnimationNode: AnimateMotion not implemented',
+			// );
+			//return null;
+			break;
 		case AnimationNodeType.AnimateColor:
-			window.app.console.log(
-				'createAnimationNode: AnimateColor not implemented',
+			aCreatedNode = new AnimationColorNode(
+				aNodeInfo,
+				aParentNode,
+				aNodeContext,
 			);
-			return null;
+			break;
 		case AnimationNodeType.AnimateTransform:
 			if (isTransformSupported(aNodeInfo as AnimateTransformNodeInfo)) {
 				aCreatedNode = new AnimationTransformNode(
@@ -165,28 +159,14 @@ function createAnimationNode(
 				);
 				return null;
 			}
-		case AnimationNodeType.TransitionFilter:
-			if (
-				isTransitionFilterSupported(
-					aNodeInfo as TransitionFilterNodeInfo,
-					aNodeContext.aContext.aSlideShowHandler.isGlSupported(),
-				)
-			) {
-				aCreatedNode = new AnimationTransitionFilterNode(
-					aNodeInfo,
-					aParentNode,
-					aNodeContext,
-				);
-				break;
-			} else {
-				const transitionFilterInfo = aNodeInfo as TransitionFilterNodeInfo;
-				window.app.console.log(
-					`createAnimationNode: AnimationTransitionFilterNode: ` +
-						`transition '${transitionFilterInfo.transitionType}' ` +
-						`'${transitionFilterInfo.transitionSubType}' not supported`,
-				);
-				return null;
-			}
+		case AnimationNodeType.TransitionFilter: {
+			aCreatedNode = new AnimationTransitionFilterNode(
+				aNodeInfo,
+				aParentNode,
+				aNodeContext,
+			);
+			break;
+		}
 		case AnimationNodeType.Audio:
 			window.app.console.log('createAnimationNode: Audio not implemented');
 			return null;
@@ -207,8 +187,17 @@ function createAnimationNode(
 			if (
 				!createChildNode(aChildrenArray[i], aCreatedContainer, aNodeContext)
 			) {
-				aCreatedContainer.removeAllChildrenNodes();
-				break;
+				// Discard the whole effect except animation node is a Set node and
+				// it's not the only node included into the effect.
+				if (
+					!(
+						aChildrenArray.length !== 1 &&
+						getAnimationNodeType(aChildrenArray[i]) === AnimationNodeType.Set
+					)
+				) {
+					aCreatedContainer.removeAllChildrenNodes();
+					break;
+				}
 			}
 		}
 	}

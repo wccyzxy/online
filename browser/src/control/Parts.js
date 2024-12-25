@@ -13,6 +13,7 @@
  */
 
 /* global app _ cool */
+/* global _ JSDialog app */
 
 L.Map.include({
 	/*
@@ -210,49 +211,43 @@ L.Map.include({
 		this._previewQueue.push([part, tileMsg]);
 	},
 
-	getPreview: function (id, index, maxWidth, maxHeight, options) {
-		if (!this._docPreviews) {
-			this._docPreviews = {};
-		}
-		var autoUpdate = options ? !!options.autoUpdate : false;
-		var fetchThumbnail = options && options.fetchThumbnail ? options.fetchThumbnail : true;
-		var isSlideshow = options && options.slideshow ? options.slideshow : false;
-		this._docPreviews[id] = {id: id, index: index, maxWidth: maxWidth, maxHeight: maxHeight, autoUpdate: autoUpdate, invalid: false};
+	getPreview: function (id, part, maxWidth, maxHeight, options) {
 
-		var docLayer = this._docLayer;
-		if (docLayer._docType === 'text') {
-			return;
-		}
-		else {
-			var part = index;
-			var tilePosX = 0;
-			var tilePosY = 0;
-			var tileWidth = docLayer._partWidthTwips ? docLayer._partWidthTwips: docLayer._docWidthTwips;
-			var tileHeight = docLayer._partHeightTwips ? docLayer._partHeightTwips: docLayer._docHeightTwips;
-		}
-		var docRatio = tileWidth / tileHeight;
-		var imgRatio = maxWidth / maxHeight;
+		if (!this._docPreviews) this._docPreviews = {};
+
+		const autoUpdate = options ? !!options.autoUpdate : false;
+		const fetchThumbnail = options && options.fetchThumbnail !== undefined ? options.fetchThumbnail : true;
+		const isSlideshow = options && options.slideshow !== undefined ? options.slideshow : false;
+
+		this._docPreviews[id] = {id: id, index: part, maxWidth: maxWidth, maxHeight: maxHeight, autoUpdate: autoUpdate, invalid: false};
+
+		let docLayer = this._docLayer;
+
+		if (docLayer._docType === 'text') return;
+
+		const tileWidth = docLayer._partWidthTwips ? docLayer._partWidthTwips: docLayer._docWidthTwips;
+		const tileHeight = docLayer._partHeightTwips ? docLayer._partHeightTwips: docLayer._docHeightTwips;
+
+		const docRatio = tileWidth / tileHeight;
+		const imgRatio = maxWidth / maxHeight;
+
 		// fit into the given rectangle while maintaining the ratio
-		if (imgRatio > docRatio) {
-			maxWidth = Math.round(tileWidth * maxHeight / tileHeight);
-		}
-		else {
-			maxHeight = Math.round(tileHeight * maxWidth / tileWidth);
-		}
+		if (imgRatio > docRatio) maxWidth = Math.round(tileWidth * maxHeight / tileHeight);
+		else maxHeight = Math.round(tileHeight * maxWidth / tileWidth);
 
 		if (fetchThumbnail) {
 			var mode = docLayer._selectedMode;
 			this._addPreviewToQueue(part, 'tile ' +
 							'nviewid=0' + ' ' +
-							'part=' + part + ' ' +
-							((mode !== 0) ? ('mode=' + mode + ' ') : '') +
-							'width=' + maxWidth * app.roundedDpiScale + ' ' +
-							'height=' + maxHeight * app.roundedDpiScale + ' ' +
-							'tileposx=' + tilePosX + ' ' +
-							'tileposy=' + tilePosY + ' ' +
-							'tilewidth=' + tileWidth + ' ' +
-							'tileheight=' + tileHeight + ' ' +
-							'id=' + id +
+							'part=' + String(part) + ' ' +
+							'mode=' + String(mode) + ' ' +
+							'width=' + String(maxWidth * app.roundedDpiScale) + ' ' +
+							'height=' + String(maxHeight * app.roundedDpiScale) + ' ' +
+							'tileposx=' + '0 ' +
+							'tileposy=' + '0 ' +
+							'tilewidth=' + String(tileWidth) + ' ' +
+							'tileheight=' + String(tileHeight) + ' ' +
+							'id=' + String(id) +
 							(isSlideshow ? ' slideshow=1' : ''));
 			this._processPreviewQueue();
 		}
@@ -482,7 +477,9 @@ L.Map.include({
 				}
 			}
 
-			var callback = function() {
+			const dialogId = 'show-sheets-modal';
+
+			const buttonCallback = function() {
 				var checkboxList = document.querySelectorAll('input[id^="hidden-part-checkbox"]');
 				for (var i = 0; i < checkboxList.length; i++) {
 					if (checkboxList[i].checked === true) {
@@ -493,9 +490,24 @@ L.Map.include({
 				}
 			};
 
-			this.uiManager.showInfoModal('show-sheets-modal', '', ' ', ' ', _('Close'), callback, true, 'show-sheets-modal-response');
-			const modal = document.getElementById('show-sheets-modal');
+			this.uiManager.showInfoModal(dialogId, _('Show sheets'), ' ', ' ', _('OK'), buttonCallback, true, dialogId + '-response');
+			const modal = document.getElementById(dialogId);
 			modal.insertBefore(container, modal.children[0]);
+
+			JSDialog.enableButtonInModal(dialogId, dialogId + '-response', false);
+
+			var checkboxes = document.querySelectorAll('#show-sheets-modal input[type="checkbox"]');
+			checkboxes.forEach(function(checkbox) {
+				checkbox.addEventListener('change', function() {
+					var anyChecked = false;
+					checkboxes.forEach(function(checkbox) {
+						if (checkbox.checked) {
+							anyChecked = true;
+						}
+					});
+					JSDialog.enableButtonInModal(dialogId, dialogId + '-response', anyChecked);
+				});
+			});
 		}
 	},
 

@@ -100,6 +100,7 @@ class VRuler {
 			this,
 		);
 		this._map.on('commandstatechanged', this.onCommandStateChanged, this);
+		this._map.on('rulerchanged', this._onRulerChanged, this);
 		L.DomUtil.addClass(this._map.getContainer(), 'hasruler');
 
 		const container: HTMLDivElement = this._initLayout();
@@ -231,6 +232,19 @@ class VRuler {
 		return this._rWrapper;
 	}
 
+	_onRulerChanged() {
+		// update show ruler state on rulerChange event
+		this.options.showruler = this._map.uiManager.getBooleanDocTypePref(
+			'ShowRuler',
+			true,
+		);
+		if (this.options.showruler) {
+			// in case of disabled ruler at docload calculation of offset can be ignored
+			// but after enabling the ruler we need to set the offset.
+			this._fixOffset();
+		}
+	}
+
 	_updateOptions(obj: Options) {
 		// window.app.console.log('===> _updateOptions');
 		// Note that the values for margin1, margin2 and leftOffset are not in any sane
@@ -264,6 +278,8 @@ class VRuler {
 	}
 
 	_updateParagraphIndentations() {
+		// if ruler is hidden no need to calculate the indentation of the para
+		if (!this.options.showruler) return;
 		// for horizontal Ruler we need to also consider height of navigation and toolbar-wrraper
 		const documentTop: number = document
 			.getElementById('document-container')
@@ -406,7 +422,8 @@ class VRuler {
 	}
 
 	_fixOffset() {
-		if (!this._map.options.docBounds) return;
+		// in case of disabled ruler at docload or event like 'moveend' calculation of offset can be ignored
+		if (!this._map.options.docBounds || !this.options.showruler) return;
 
 		const scale: number = this._map.getZoomScale(this._map.getZoom(), 10);
 		const mapPane = this._map._mapPane;
@@ -416,12 +433,19 @@ class VRuler {
 		const firstTileXTranslate = topLeft.y;
 
 		let mapPaneYTranslate: number = 0;
-		const computedStyle = window.getComputedStyle(mapPane);
-		const transformValue = computedStyle.getPropertyValue('transform');
-		const transformMatrix = new DOMMatrixReadOnly(transformValue);
 
-		// Get the translateY values
-		mapPaneYTranslate = transformMatrix.f;
+		// Extract the transform property directly from the mapPane style
+		const transformValue = mapPane.style.transform;
+
+		// Check if the transformValue exists and contains 'translate3d'
+		if (transformValue && transformValue.startsWith('translate3d')) {
+			// Split the transformValue string by commas and get the Y value
+			const transformArray = transformValue.split(',');
+			if (transformArray.length >= 2) {
+				// The Y value is the second item in the 'translate3d' format
+				mapPaneYTranslate = parseFloat(transformArray[1].trim());
+			}
+		}
 
 		// we need to also consider  if there is more then 1 page then pageoffset is crucial to consider
 		// i have calculated current page using pageoffset and pageWidth coming from CORE

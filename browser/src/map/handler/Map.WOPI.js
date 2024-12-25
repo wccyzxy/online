@@ -24,6 +24,7 @@ L.Map.WOPI = L.Handler.extend({
 	DownloadAsPostMessage: false,
 	UserCanNotWriteRelative: true,
 	EnableInsertRemoteImage: false,
+	EnableInsertRemoteFile: false, /* Separate, because requires explicit integration support */
 	DisableInsertLocalImage: false,
 	EnableInsertRemoteLink: false,
 	EnableShare: false,
@@ -121,6 +122,7 @@ L.Map.WOPI = L.Handler.extend({
 			overridenFileInfo.DownloadAsPostMessage : !!wopiInfo['DownloadAsPostMessage'];
 		this.UserCanNotWriteRelative = !!wopiInfo['UserCanNotWriteRelative'];
 		this.EnableInsertRemoteImage = !!wopiInfo['EnableInsertRemoteImage'];
+		this.EnableInsertRemoteFile = !!wopiInfo['EnableInsertRemoteFile'];
 		this.DisableInsertLocalImage = !!wopiInfo['DisableInsertLocalImage'];
 		this.EnableRemoteLinkPicker = !!wopiInfo['EnableRemoteLinkPicker'];
 		this.SupportsRename = !!wopiInfo['SupportsRename'];
@@ -160,14 +162,21 @@ L.Map.WOPI = L.Handler.extend({
 			return;
 		}
 
-		var menuEntries = JSDialog.MenuDefinitions.get('InsertImageMenu');
+		var menuEntriesImage = JSDialog.MenuDefinitions.get('InsertImageMenu');
+		var menuEntriesMultimedia = JSDialog.MenuDefinitions.get('InsertMultimediaMenu');
 
 		if (this.DisableInsertLocalImage) {
-			menuEntries = [];
+			menuEntriesImage = [];
+			menuEntriesMultimedia = [];
 		}
 
 		if (this.EnableInsertRemoteImage) {
-			menuEntries.push({action: 'remotegraphic', text: _UNO('.uno:InsertGraphic', '', true)});
+			menuEntriesImage.push({action: 'remotegraphic', text: _UNO('.uno:InsertGraphic', '', true)});
+		}
+
+		if (this.EnableInsertRemoteFile) {
+			/* Separate, because needs explicit integration support */
+			menuEntriesMultimedia.push({action: 'remotemultimedia', text: _UNO('.uno:InsertAVMedia', '', true)});
 		}
 
 		this._insertImageMenuSetupDone = true;
@@ -254,6 +263,12 @@ L.Map.WOPI = L.Handler.extend({
 			return true;
 		}
 
+		const eSignature = this._map.eSignature;
+		if (eSignature && eSignature.url === e.origin) {
+			// The sender is our esign popup: accept it.
+			return true;
+		}
+
 		return false;
 	},
 
@@ -267,6 +282,9 @@ L.Map.WOPI = L.Handler.extend({
 
 		if (('data' in e) && Object.hasOwnProperty.call(e.data, 'MessageId')) {
 			// when e.data already contains the right props, but isn't JSON (a blob is passed for ex)
+			msg = e.data;
+		} else if (typeof e.data === 'object') {
+			// E.g. the esign popup sends us an object, no need to JSON-parse it.
 			msg = e.data;
 		} else {
 			try {
@@ -355,6 +373,40 @@ L.Map.WOPI = L.Handler.extend({
 		}
 		else if (msg.MessageId === 'Extend_Notebookbar') {
 			this._map.uiManager.extendNotebookbar();
+			return;
+		}
+		else if (msg.MessageId === 'Show_NotebookTab' || msg.MessageId === 'Hide_NotebookTab') {
+			if (!msg.Values) {
+				window.app.console.error('Property "Values" not set');
+				return;
+			}
+			if (!msg.Values.id) {
+				window.app.console.error('Property "Values.id" not set');
+				return;
+			}
+
+			let show = msg.MessageId === 'Show_NotebookTab';
+			this._map.uiManager.showNotebookTab(msg.Values.id, show);
+			return;
+		}
+		else if (msg.MessageId === 'Show_Sidebar') {
+			/* id is optional */
+                        if (msg.Values) {
+				switch (msg.Values.id) {
+				case 'Navigator':
+				case 'ModifyPage':
+				case 'SlideChangeWindow':
+				case 'CustomAnimation':
+				case 'MasterSlidesPanel':
+					this._map.sendUnoCommand(`.uno:${msg.Values.id}`);
+					return;
+				}
+			}
+			this._map.sendUnoCommand('.uno:SidebarDeck.PropertyDeck');
+			return;
+		}
+		else if (msg.MessageId === 'Hide_Sidebar') {
+			this._map.sendUnoCommand('.uno:SidebarHide');
 			return;
 		}
 		else if (msg.MessageId === 'Show_Menu_Item' || msg.MessageId === 'Hide_Menu_Item') {
@@ -518,7 +570,12 @@ L.Map.WOPI = L.Handler.extend({
 		}
 		else if (msg.MessageId == 'Action_InsertGraphic') {
 			if (msg.Values) {
-				this._map.insertURL(msg.Values.url);
+				this._map.insertURL(msg.Values.url, "graphicurl");
+			}
+		}
+		else if (msg.MessageId == 'Action_InsertMultimedia') {
+			if (msg.Values) {
+				this._map.insertURL(msg.Values.url, "multimediaurl");
 			}
 		}
 		else if (msg.MessageId == 'Action_InsertLink') {
@@ -649,6 +706,13 @@ L.Map.WOPI = L.Handler.extend({
 		else if (msg.MessageId === 'Action_Mention') {
 			var list = msg.Values.list;
 			this._map.mention.openMentionPopup(list);
+		}
+		else if (msg.sender === 'EIDEASY_SINGLE_METHOD_SIGNATURE') {
+			// This is produced by the esign popup.
+			const eSignature = this._map.eSignature;
+			if (eSignature) {
+				eSignature.handleSigned(msg);
+			}
 		}
 	},
 

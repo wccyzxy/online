@@ -16,8 +16,11 @@
 
 declare var app: any;
 declare var SlideShow: any;
+// These are defined in browser/js/global.js
 declare var ThisIsTheAndroidApp: any;
 declare var ThisIsTheiOSApp: any;
+declare var makeHttpUrl: any;
+declare var coolParams: any;
 
 type LayerContentType =
 	| ImageInfo
@@ -35,6 +38,7 @@ type TextFields = {
 
 interface TextFieldInfo {
 	type: TextFieldsType;
+	hash: string;
 	content: ImageInfo;
 }
 
@@ -50,10 +54,14 @@ interface AnimatedShapeInfo {
 	type: 'bitmap' | 'svg';
 	content: ImageInfo | SVGElement;
 	bounds: BoundingBoxType;
+	fillColor?: string;
+	lineColor?: string;
+	fontColor?: string;
 }
 
 interface PlaceholderInfo {
 	type: TextFieldsType;
+	hash: string;
 }
 
 interface LayerInfo {
@@ -90,8 +98,7 @@ class LayerDrawing {
 	private cachedMasterPages: Map<string, Array<LayerEntry>> = new Map();
 	private cachedDrawPages: Map<string, Array<LayerEntry>> = new Map();
 	private cachedTextFields: Map<string, TextFieldInfo> = new Map();
-	private slideTextFieldsMap: Map<string, Map<TextFieldsType, string>> =
-		new Map();
+	private slideTextFieldsMap: Map<string, Map<string, string>> = new Map();
 	private offscreenCanvas: OffscreenCanvas = null;
 	private onSlideRenderingCompleteCallback: VoidFunction = null;
 	private layerRenderer: LayerRenderer;
@@ -109,6 +116,17 @@ class LayerDrawing {
 	removeHooks() {
 		this.map.off('slidelayer', this.onSlideLayerMsg, this);
 		this.map.off('sliderenderingcomplete', this.onSlideRenderingComplete, this);
+	}
+
+	public isDisposed() {
+		return this.layerRenderer && this.layerRenderer.isDisposed();
+	}
+	public deleteResources() {
+		this.requestedSlideHash = null;
+		this.prefetchedSlideHash = null;
+		this.nextRequestedSlideHash = null;
+		this.nextPrefetchedSlideHash = null;
+		this.layerRenderer.dispose();
 	}
 
 	private getSlideInfo(slideHash: string): SlideInfo {
@@ -146,6 +164,8 @@ class LayerDrawing {
 	}
 
 	public composeLayers(slideHash: string): void {
+		if (this.isDisposed()) return;
+
 		this.drawBackground(slideHash);
 		this.drawMasterPage(slideHash);
 		this.drawDrawPage(slideHash);
@@ -185,6 +205,11 @@ class LayerDrawing {
 
 	public invalidateAll(): void {
 		this.slideCache.invalidateAll();
+		this.slideTextFieldsMap.clear();
+		this.cachedTextFields.clear();
+		this.cachedBackgrounds.clear();
+		this.cachedMasterPages.clear();
+		this.cachedDrawPages.clear();
 	}
 
 	public getCanvasSize(): [number, number] {
@@ -223,6 +248,8 @@ class LayerDrawing {
 	}
 
 	private requestSlideImpl(slideHash: string, prefetch: boolean = false) {
+		if (this.isDisposed()) return;
+
 		console.debug(
 			'LayerDrawing.requestSlideImpl: slide hash: ' +
 				slideHash +
@@ -300,11 +327,13 @@ class LayerDrawing {
 
 		app.socket.sendMessage(
 			`getslide hash=${slideInfo.hash} part=${slideInfo.index} width=${this.canvasWidth} height=${this.canvasHeight} ` +
-				`renderBackground=${backgroundRendered ? 0 : 1} renderMasterPage=${masterPageRendered ? 0 : 1}`,
+				`renderBackground=${backgroundRendered ? 0 : 1} renderMasterPage=${masterPageRendered ? 0 : 1} devicePixelRatio=${window.devicePixelRatio}`,
 		);
 	}
 
 	onSlideLayerMsg(e: any) {
+		if (this.isDisposed()) return;
+
 		const info = e.message;
 		if (!info) {
 			window.app.console.log(
@@ -349,10 +378,10 @@ class LayerDrawing {
 
 		let textFields = this.slideTextFieldsMap.get(info.slideHash);
 		if (!textFields) {
-			textFields = new Map<TextFieldsType, string>();
+			textFields = new Map<string, string>();
 			this.slideTextFieldsMap.set(info.slideHash, textFields);
 		}
-		textFields.set(textFieldInfo.type, imageInfo.checksum);
+		textFields.set(textFieldInfo.hash, imageInfo.checksum);
 
 		this.cachedTextFields.set(imageInfo.checksum, textFieldInfo);
 	}
@@ -483,16 +512,9 @@ class LayerDrawing {
 			return false;
 		}
 
-		var hasField = false;
 		for (const layer of layers) {
 			this.drawMasterPageLayer(layer, slideHash);
-			if (layer.isField) {
-				this.cachedMasterPages.delete(slideInfo.masterPage);
-				hasField = true;
-			}
 		}
-
-		if (hasField) return false;
 
 		return true;
 	}
@@ -504,7 +526,7 @@ class LayerDrawing {
 			const placeholder = layer.content as PlaceholderInfo;
 			const slideTextFields = this.slideTextFieldsMap.get(slideHash);
 			const checksum = slideTextFields
-				? slideTextFields.get(placeholder.type)
+				? slideTextFields.get(placeholder.hash)
 				: null;
 			if (!checksum) {
 				window.app.console.log(
@@ -553,20 +575,8 @@ class LayerDrawing {
 						'LayerDrawing.drawDrawPageLayer: retrieved animatedElement',
 					);
 					if (animatedElement.isValid()) {
-						if (this.layerRenderer.isGlRenderer()) {
-							animatedElement.renderLayer(this.layerRenderer);
-							return;
-						} else {
-							const nextFrame = animatedElement.getAnimatedLayer();
-							if (nextFrame) {
-								console.debug(
-									'LayerDrawing.drawDrawPageLayer: draw next frame',
-								);
-								this.drawBitmap(nextFrame);
-								return;
-							}
-							return; // no layer means it is not visible
-						}
+						animatedElement.renderLayer(this.layerRenderer);
+						return;
 					}
 				}
 				this.drawBitmap(content.content as ImageInfo);
@@ -579,6 +589,8 @@ class LayerDrawing {
 	}
 
 	onSlideRenderingComplete(e: any) {
+		if (this.isDisposed()) return;
+
 		if (!e.success) {
 			const slideHash = this.requestedSlideHash || this.prefetchedSlideHash;
 			const slideInfo = this.getSlideInfo(slideHash);
@@ -652,6 +664,10 @@ class LayerDrawing {
 			resWidth,
 			resHeight,
 		);
+	}
+
+	public getLayerRendererContext(): RenderContext {
+		return this.layerRenderer.getRenderContext();
 	}
 }
 

@@ -11,6 +11,11 @@
 
 #pragma once
 
+#include <common/ConfigUtil.hpp>
+#include <common/FileUtil.hpp>
+#include <common/Unit.hpp>
+#include <common/Util.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -20,219 +25,23 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
-#include <utility>
-
-#include <signal.h>
 
 #include <Poco/Path.h>
 #include <Poco/Util/AbstractConfiguration.h>
 #include <Poco/Util/OptionSet.h>
 #include <Poco/Util/ServerApplication.h>
 
-#include "Util.hpp"
-#include "FileUtil.hpp"
-#include "WebSocketHandler.hpp"
-#include "QuarantineUtil.hpp"
-
+class WSProcess;
+class ForKitProcess;
 class ChildProcess;
-class TraceFileWriter;
-class DocumentBroker;
 class ClipboardCache;
+class DocumentBroker;
 class FileServerRequestHandler;
+class ForKitProcess;
+class SocketPoll;
+class TraceFileWriter;
 
 std::shared_ptr<ChildProcess> getNewChild_Blocks(SocketPoll &destPoll, unsigned mobileAppDocId);
-
-// A WSProcess object in the WSD process represents a descendant process, either the direct child
-// process ForKit or a grandchild Kit process, with which the WSD process communicates through a
-// WebSocket.
-class WSProcess
-{
-public:
-    /// @param pid is the process ID.
-    /// @param socket is the underlying Socket to the process.
-    WSProcess(const std::string& name,
-              const pid_t pid,
-              const std::shared_ptr<StreamSocket>& socket,
-              std::shared_ptr<WebSocketHandler> handler) :
-
-        _name(name),
-        _pid(pid),
-        _ws(std::move(handler)),
-        _socket(socket)
-    {
-        LOG_INF(_name << " ctor [" << _pid << "].");
-    }
-
-    WSProcess(WSProcess&& other) = delete;
-
-    const WSProcess& operator=(WSProcess&& other) = delete;
-
-    virtual ~WSProcess()
-    {
-        LOG_DBG('~' << _name << " dtor [" << _pid << "].");
-
-        if (_pid <= 0)
-            return;
-
-        terminate();
-
-        // No need for the socket anymore.
-        _ws.reset();
-        _socket.reset();
-    }
-
-    /// Let the child close a nice way.
-    void close()
-    {
-        if (_pid < 0)
-            return;
-
-        try
-        {
-            LOG_DBG("Closing ChildProcess [" << _pid << "].");
-
-            requestTermination();
-
-            // Shutdown the socket.
-            if (_ws)
-                _ws->shutdown();
-        }
-        catch (const std::exception& ex)
-        {
-            LOG_ERR("Error while closing child process: " << ex.what());
-        }
-
-        _pid = -1; // Detach from child.
-    }
-
-    /// Request graceful termination.
-    void requestTermination()
-    {
-        // Request the child to exit
-        if (isAlive())
-        {
-            LOG_DBG("Stopping ChildProcess [" << _pid << "] by sending 'exit' command");
-            sendTextFrame("exit", /*flush=*/true);
-        }
-    }
-
-    /// Kill or abandon the child.
-    void terminate()
-    {
-        if (_pid < 0)
-            return;
-
-#if !MOBILEAPP
-        if (::kill(_pid, 0) == 0)
-        {
-            LOG_INF("Killing child [" << _pid << "].");
-#if CODE_COVERAGE || VALGRIND_COOLFORKIT
-            constexpr auto signal = SIGTERM;
-#else
-            constexpr auto signal = SIGKILL;
-#endif
-            if (!SigUtil::killChild(_pid, signal))
-            {
-                LOG_ERR("Cannot terminate lokit [" << _pid << "]. Abandoning.");
-            }
-        }
-#else
-        // What to do? Throw some unique exception that the outermost call in the thread catches and
-        // exits from the thread?
-#endif
-        _pid = -1;
-    }
-
-    pid_t getPid() const { return _pid; }
-
-    /// Send a text payload to the child-process WS.
-    bool sendTextFrame(const std::string& data, bool flush = false)
-    {
-        return sendFrame(data, false, flush);
-    }
-
-    /// Send a payload to the child-process WS.
-    bool sendFrame(const std::string& data, bool binary = false, bool flush = false)
-    {
-        try
-        {
-            if (_ws)
-            {
-                LOG_TRC("Send to " << _name << " message: ["
-                                   << COOLProtocol::getAbbreviatedMessage(data) << ']');
-                _ws->sendMessage(data.c_str(), data.size(),
-                                 (binary ? WSOpCode::Binary : WSOpCode::Text), flush);
-                return true;
-            }
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Failed to send " << _name << " [" << _pid << "] data [" <<
-                    COOLProtocol::getAbbreviatedMessage(data) << "] due to: " << exc.what());
-            throw;
-        }
-
-        LOG_WRN("No socket to " << _name << " to send [" << COOLProtocol::getAbbreviatedMessage(data) << ']');
-        return false;
-    }
-
-    /// Check whether this child is alive and socket not in error.
-    /// Note: zombies will show as alive, and sockets have waiting
-    /// time after the other end-point closes. So this isn't accurate.
-    virtual bool isAlive() const
-    {
-#if !MOBILEAPP
-        try
-        {
-            return _pid > 1 && _ws && ::kill(_pid, 0) == 0;
-        }
-        catch (const std::exception&)
-        {
-        }
-
-        return false;
-#else
-        return _pid > 1;
-#endif
-    }
-
-protected:
-    std::shared_ptr<WebSocketHandler> getWSHandler() const { return _ws; }
-    std::shared_ptr<StreamSocket> getSocket() const { return _socket.lock(); };
-
-private:
-    std::string _name;
-    std::atomic<pid_t> _pid; ///< The process-id, which can be access from different threads.
-    std::shared_ptr<WebSocketHandler> _ws;  // FIXME: should be weak ? ...
-    std::weak_ptr<StreamSocket> _socket;
-};
-
-#if !MOBILEAPP
-
-class ForKitProcWSHandler final : public WebSocketHandler
-{
-public:
-    template <typename T>
-    ForKitProcWSHandler(const std::weak_ptr<StreamSocket>& socket, const T& request)
-        : WebSocketHandler(socket.lock(), request)
-    {
-    }
-
-    virtual void handleMessage(const std::vector<char>& data) override;
-};
-
-class ForKitProcess final : public WSProcess
-{
-public:
-    template <typename T>
-    ForKitProcess(int pid, std::shared_ptr<StreamSocket>& socket, const T& request)
-        : WSProcess("ForKit", pid, socket, std::make_shared<ForKitProcWSHandler>(socket, request))
-    {
-        socket->setHandler(getWSHandler());
-    }
-};
-
-#endif
 
 /// The Server class which is responsible for all
 /// external interactions.
@@ -273,6 +82,7 @@ public:
     static std::string FileServerRoot;
     static std::string ServiceRoot; ///< There are installations that need prefixing every page with some path.
     static std::string TmpFontDir;
+    static std::string TmpPresntTemplateDir;
     static std::string LOKitVersion;
     static bool EnableTraceEventLogging;
     static bool EnableAccessibility;
@@ -357,23 +167,7 @@ public:
         return HardwareResourceWarning;
     }
 
-    static bool isSSLEnabled()
-    {
-#if ENABLE_SSL
-        return !Util::isFuzzing() && COOLWSD::SSLEnabled.get();
-#else
-        return false;
-#endif
-    }
-
-    static bool isSSLTermination()
-    {
-#if ENABLE_SSL
-        return !Util::isFuzzing() && COOLWSD::SSLTermination.get();
-#else
-        return false;
-#endif
-    }
+    static bool isSSLTermination() { return ConfigUtil::isSSLTermination(); }
 
     static std::shared_ptr<TerminatingPoll> getWebServerPoll();
 
@@ -389,71 +183,6 @@ public:
             return false; // mark everything else editable on mobile
         }
         return EditFileExtensions.find(lowerCaseExtension) == EditFileExtensions.end();
-    }
-
-    /// Returns the value of the specified application configuration,
-    /// or the default, if one doesn't exist.
-    template<typename T>
-    static
-    T getConfigValue(const std::string& name, const T def)
-    {
-        if (Util::isFuzzing())
-        {
-            return def;
-        }
-
-        return getConfigValue(Application::instance().config(), name, def);
-    }
-
-    /// Returns the value of the specified application configuration,
-    /// or the default, if one doesn't exist.
-    template <typename T> static T getConfigValueNonZero(const std::string& name, const T def)
-    {
-        static_assert(std::is_integral<T>::value, "Meaningless on non-integral types");
-
-        if (Util::isFuzzing())
-        {
-            return def;
-        }
-
-        const T res = getConfigValue(Application::instance().config(), name, def);
-        return res <= T(0) ? T(0) : res;
-    }
-
-    /// Reads and processes path entries with the given property
-    /// from the configuration.
-    /// Converts relative paths to absolute.
-    static
-    std::string getPathFromConfig(const std::string& name)
-    {
-        return getPathFromConfig(Application::instance().config(), name);
-    }
-
-    /// Reads and processes path entries with the given property
-    /// from the configuration. If value is empty then it reads from fallback
-    /// Converts relative paths to absolute.
-    static
-    std::string getPathFromConfigWithFallback(const std::string& name, const std::string& fallbackName)
-    {
-        std::string value;
-        // the expected path might not exist, in which case Poco throws an exception
-        try
-        {
-            value = COOLWSD::getPathFromConfig(name);
-        }
-        catch (...)
-        {
-        }
-        if (value.empty())
-            return COOLWSD::getPathFromConfig(fallbackName);
-        return value;
-    }
-
-    /// Returns true if and only if the property with the given key exists.
-    static
-    bool hasProperty(const std::string& key)
-    {
-        return Application::instance().config().hasProperty(key);
     }
 
     /// Trace a new session and take a snapshot of the file.
@@ -478,6 +207,9 @@ public:
 
     /// Sends a message to ForKit through PrisonerPoll.
     static void sendMessageToForKit(const std::string& message);
+
+    /// Terminates spare kits that aren't assigned a document yet.
+    static void requestTerminateSpareKits();
 
     /// Checks forkit (and respawns), rebalances
     /// child kit processes and cleans up DocBrokers.
@@ -541,22 +273,18 @@ protected:
 
     void defineOptions(Poco::Util::OptionSet& options) override;
     void handleOption(const std::string& name, const std::string& value) override;
-    void initializeEnvOptions();
     int main(const std::vector<std::string>& args) override;
 
     /// Handle various global static destructors.
     static void cleanup();
 
 private:
-#if ENABLE_SSL
-    static Util::RuntimeConstant<bool> SSLEnabled;
-    static Util::RuntimeConstant<bool> SSLTermination;
-#endif
-
 #if !MOBILEAPP
     void processFetchUpdate(SocketPoll& poll);
     static void setupChildRoot(const bool UseMountNamespaces);
-#endif
+    void initializeEnvOptions();
+#endif // !MOBILEAPP
+
     void initializeSSL();
     void displayHelp();
 
@@ -565,82 +293,6 @@ private:
 
     /// The actual main implementation.
     int innerMain();
-
-    class ConfigValueGetter
-    {
-        Poco::Util::LayeredConfiguration& _config;
-        const std::string& _name;
-
-    public:
-        ConfigValueGetter(Poco::Util::LayeredConfiguration& config,
-                          const std::string& name)
-            : _config(config)
-            , _name(name)
-        {
-        }
-
-        void operator()(int& value) { value = _config.getInt(_name); }
-        void operator()(unsigned int& value) { value = _config.getUInt(_name); }
-        void operator()(uint64_t& value) { value = _config.getUInt64(_name); }
-        void operator()(bool& value) { value = _config.getBool(_name); }
-        void operator()(std::string& value) { value = _config.getString(_name); }
-        void operator()(double& value) { value = _config.getDouble(_name); }
-    };
-
-    template <typename T>
-    static bool getSafeConfig(Poco::Util::LayeredConfiguration& config,
-                              const std::string& name, T& value)
-    {
-        try
-        {
-            ConfigValueGetter(config, name)(value);
-            return true;
-        }
-        catch (...)
-        {
-        }
-
-        return false;
-    }
-
-    template<typename T>
-    static
-    T getConfigValue(Poco::Util::LayeredConfiguration& config,
-                     const std::string& name, const T def)
-    {
-        T value = def;
-        if (getSafeConfig(config, name, value) ||
-            getSafeConfig(config, name + "[@default]", value))
-        {
-            return value;
-        }
-
-        return def;
-    }
-
-    /// Reads and processes path entries with the given property
-    /// from the configuration.
-    /// Converts relative paths to absolute.
-    static
-    std::string getPathFromConfig(Poco::Util::LayeredConfiguration& config, const std::string& property)
-    {
-        std::string path = config.getString(property);
-        if (path.empty() && config.hasProperty(property + "[@default]"))
-        {
-            // Use the default value if empty and a default provided.
-            path = config.getString(property + "[@default]");
-        }
-
-        // Reconstruct absolute path if relative.
-        if (!Poco::Path(path).isAbsolute() &&
-            config.hasProperty(property + "[@relative]") &&
-            config.getBool(property + "[@relative]"))
-        {
-            path = Poco::Path(Application::instance().commandPath()).parent().append(path).toString();
-        }
-
-        return path;
-    }
 
     static void appendAllowedHostsFrom(Poco::Util::LayeredConfiguration& conf, const std::string& root, std::vector<std::string>& allowed);
     static void appendAllowedAliasGroups(Poco::Util::LayeredConfiguration& conf, std::vector<std::string>& allowed);

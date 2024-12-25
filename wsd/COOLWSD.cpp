@@ -11,16 +11,8 @@
 
 #include <config.h>
 #include <config_version.h>
-#include <NetUtil.hpp>
 
 #include "COOLWSD.hpp"
-#if ENABLE_FEATURE_LOCK
-#include "CommandControl.hpp"
-#endif
-#if !MOBILEAPP
-#include <wsd/SpecialBrokers.hpp>
-#include <HostUtil.hpp>
-#endif // !MOBILEAPP
 
 /* Default host used in the start test URI */
 #define COOLWSD_TEST_HOST "localhost"
@@ -42,7 +34,6 @@
 // number of child processes, each which handles a viewing (editing) session for one document.
 
 #include <unistd.h>
-#include <stdlib.h>
 #include <sysexits.h>
 
 #include <sys/types.h>
@@ -65,6 +56,10 @@
 #include <string>
 #include <thread>
 
+#if ENABLE_FEATURE_LOCK
+#include "CommandControl.hpp"
+#endif
+
 #if !MOBILEAPP
 
 #if ENABLE_SSL
@@ -73,15 +68,16 @@
 
 #include <cerrno>
 #include <stdexcept>
-#include <fstream>
 #include <unordered_map>
 
 #include "Admin.hpp"
 #include "Auth.hpp"
 #include "FileServer.hpp"
 #include "UserMessages.hpp"
+#include <wsd/RemoteConfig.hpp>
+#include <wsd/SpecialBrokers.hpp>
 
-#endif
+#endif // !MOBILEAPP
 
 #include <Poco/DirectoryIterator.h>
 #include <Poco/Exception.h>
@@ -97,19 +93,18 @@
 #include <Poco/Util/ServerApplication.h>
 #include <Poco/Util/XMLConfiguration.h>
 
+#include <common/Anonymizer.hpp>
 #include <ClientRequestDispatcher.hpp>
 #include <Common.hpp>
 #include <Clipboard.hpp>
 #include <Crypto.hpp>
 #include <DelaySocket.hpp>
 #include <wsd/DocumentBroker.hpp>
+#include <wsd/Process.hpp>
 #include <common/JsonUtil.hpp>
 #include <common/FileUtil.hpp>
 #include <common/JailUtil.hpp>
 #include <common/Watchdog.hpp>
-#if MOBILEAPP
-#  include <Kit.hpp>
-#endif
 #include <Log.hpp>
 #include <MobileApp.hpp>
 #include <Protocol.hpp>
@@ -129,6 +124,7 @@
 #include <ServerSocket.hpp>
 
 #if MOBILEAPP
+#include <Kit.hpp>
 #ifdef IOS
 #include "ios.h"
 #elif defined(GTKAPP)
@@ -179,6 +175,7 @@ static std::atomic<int> OutstandingForks(0);
 std::map<std::string, std::shared_ptr<DocumentBroker>> DocBrokers;
 std::mutex DocBrokersMutex;
 static Poco::AutoPtr<Poco::Util::XMLConfiguration> KitXmlConfig;
+static std::string LoggableConfigEntries;
 
 extern "C"
 {
@@ -216,7 +213,7 @@ void COOLWSD::appendAllowedHostsFrom(LayeredConfiguration& conf, const std::stri
         {
             break;
         }
-        const std::string host = getConfigValue<std::string>(conf, path, "");
+        const std::string host = ConfigUtil::getConfigValue<std::string>(conf, path, "");
         if (!host.empty())
         {
             LOG_INF_S("Adding trusted LOK_ALLOW host: [" << host << ']');
@@ -231,20 +228,20 @@ std::string removeProtocolAndPort(const std::string& host)
     std::string result;
 
     // protocol
-    size_t nPos = host.find("//");
-    if (nPos != std::string::npos)
-        result = host.substr(nPos + 2);
+    size_t pos = host.find("//");
+    if (pos != std::string::npos)
+        result = host.substr(pos + 2);
     else
         result = host;
 
     // port
-    nPos = result.find(":");
-    if (nPos != std::string::npos)
+    pos = result.find(":");
+    if (pos != std::string::npos)
     {
-        if (nPos == 0)
+        if (pos == 0)
             return "";
 
-        result = result.substr(0, nPos);
+        result = result.substr(0, pos);
     }
 
     return result;
@@ -296,7 +293,7 @@ void COOLWSD::appendAllowedAliasGroups(LayeredConfiguration& conf, std::vector<s
                 break;
             }
 
-            std::string alias = getConfigValue<std::string>(conf, aliasPath, "");
+            std::string alias = ConfigUtil::getConfigValue<std::string>(conf, aliasPath, "");
 
             alias = removeProtocolAndPort(alias);
             if (!alias.empty())
@@ -362,7 +359,7 @@ void COOLWSD::writeTraceEventRecording(const std::string &recording)
 void COOLWSD::checkSessionLimitsAndWarnClients()
 {
 #if !MOBILEAPP
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
         return;
 
     ssize_t docBrokerCount = DocBrokers.size() - ConvertToBroker::getInstanceCount();
@@ -453,12 +450,10 @@ void cleanupDocBrokers()
 #if !MOBILEAPP
 
 /// Forks as many children as requested.
-/// Returns the number of children requested to spawn,
-/// -1 for error.
-static int forkChildren(const int number)
+static void forkChildren(const int number)
 {
     if (Util::isKitInProcess())
-        return 0;
+        return;
 
     LOG_TRC("Request forkit to spawn " << number << " new child(ren)");
     Util::assertIsLocked(NewChildrenMutex);
@@ -467,15 +462,12 @@ static int forkChildren(const int number)
     {
         COOLWSD::checkDiskSpaceAndWarnClients(false);
 
-        const std::string aMessage = "spawn " + std::to_string(number) + '\n';
-        LOG_DBG("MasterToForKit: " << aMessage.substr(0, aMessage.length() - 1));
-        COOLWSD::sendMessageToForKit(aMessage);
+        const std::string message = "spawn " + std::to_string(number) + '\n';
+        LOG_DBG("MasterToForKit: " << message.substr(0, message.length() - 1));
+        COOLWSD::sendMessageToForKit(message);
         OutstandingForks += number;
         LastForkRequestTime = std::chrono::steady_clock::now();
-        return number;
     }
-
-    return 0;
 }
 
 /// Cleans up dead children.
@@ -505,9 +497,7 @@ static bool cleanupChildren()
 }
 
 /// Decides how many children need spawning and spawns.
-/// Returns the number of children requested to spawn,
-/// -1 for error.
-static int rebalanceChildren(int balance)
+static void rebalanceChildren(int balance)
 {
     Util::assertIsLocked(NewChildrenMutex);
 
@@ -538,20 +528,18 @@ static int rebalanceChildren(int balance)
                                           << (available == 1 ? "child" : "children") << ", and "
                                           << OutstandingForks << " outstanding, forking " << balance
                                           << " more. Time since last request: " << durationMs);
-        return forkChildren(balance);
+        forkChildren(balance);
     }
-
-    return 0;
 }
 
 /// Proactively spawn children processes
 /// to load documents with alacrity.
-/// Returns true only if at least one child was requested to spawn.
-static bool prespawnChildren()
+static void prespawnChildren()
 {
     // Rebalance if not forking already.
     std::unique_lock<std::mutex> lock(NewChildrenMutex, std::defer_lock);
-    return lock.try_lock() && (rebalanceChildren(COOLWSD::NumPreSpawnedChildren) > 0);
+    if (lock.try_lock())
+        rebalanceChildren(COOLWSD::NumPreSpawnedChildren);
 }
 
 #endif
@@ -599,12 +587,13 @@ inline std::string getLaunchBase(bool asAdmin = false)
 {
     std::ostringstream oss;
     oss << "    ";
-    oss << ((COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination()) ? "https://" : "http://");
+    oss << ((ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination()) ? "https://"
+                                                                           : "http://");
 
     if (asAdmin)
     {
-        auto user = COOLWSD::getConfigValue<std::string>("admin_console.username", "");
-        auto passwd = COOLWSD::getConfigValue<std::string>("admin_console.password", "");
+        auto user = ConfigUtil::getConfigValue<std::string>("admin_console.username", "");
+        auto passwd = ConfigUtil::getConfigValue<std::string>("admin_console.password", "");
 
         if (user.empty() || passwd.empty())
             return "";
@@ -678,6 +667,7 @@ std::string COOLWSD::ServerName;
 std::string COOLWSD::FileServerRoot;
 std::string COOLWSD::ServiceRoot;
 std::string COOLWSD::TmpFontDir;
+std::string COOLWSD::TmpPresntTemplateDir;
 std::string COOLWSD::LOKitVersion;
 std::string COOLWSD::ConfigFile = COOLWSD_CONFIGDIR "/coolwsd.xml";
 std::string COOLWSD::ConfigDir = COOLWSD_CONFIGDIR "/conf.d";
@@ -696,10 +686,6 @@ bool COOLWSD::AnonymizeUserData = false;
 bool COOLWSD::CheckCoolUser = true;
 bool COOLWSD::CleanupOnly = false; ///< If we should cleanup and exit.
 bool COOLWSD::IsProxyPrefixEnabled = false;
-#if ENABLE_SSL
-Util::RuntimeConstant<bool> COOLWSD::SSLEnabled;
-Util::RuntimeConstant<bool> COOLWSD::SSLTermination;
-#endif
 unsigned COOLWSD::MaxConnections;
 unsigned COOLWSD::MaxDocuments;
 std::string COOLWSD::HardwareResourceWarning = "ok";
@@ -798,15 +784,7 @@ std::shared_ptr<ChildProcess> getNewChild_Blocks(SocketPoll &destPoll, unsigned 
     int numPreSpawn = COOLWSD::NumPreSpawnedChildren;
     ++numPreSpawn; // Replace the one we'll dispatch just now.
     LOG_DBG("getNewChild: Rebalancing children to " << numPreSpawn);
-    if (rebalanceChildren(numPreSpawn) < 0)
-    {
-        LOG_DBG("getNewChild: rebalancing of children failed. Scheduling housekeeping to recover.");
-
-        COOLWSD::doHousekeeping();
-
-        // Let the caller retry after a while.
-        return nullptr;
-    }
+    rebalanceChildren(numPreSpawn);
 
     const auto timeout = std::chrono::milliseconds(ChildSpawnTimeoutMs / 2);
     LOG_TRC("Waiting for a new child for a max of " << timeout);
@@ -988,49 +966,50 @@ void InotifySocket::handlePoll(SocketDisposition & /* disposition */, std::chron
 class COOLWSDServer;
 static std::unique_ptr<COOLWSDServer> Server;
 
-/// Helper class to hold default configuration entries.
-class AppConfigMap final : public Poco::Util::MapConfiguration
-{
-public:
-    AppConfigMap(const std::map<std::string, std::string>& map)
-    {
-        for (const auto& pair : map)
-        {
-            setRaw(pair.first, pair.second);
-        }
-    }
-
-    void reset(const std::map<std::string, std::string>& map)
-    {
-        clear();
-        for (const auto& pair : map)
-        {
-            setRaw(pair.first, pair.second);
-        }
-    }
-};
-
 #if !MOBILEAPP
 
 void ForKitProcWSHandler::handleMessage(const std::vector<char> &data)
 {
-    LOG_TRC("ForKitProcWSHandler: handling incoming [" << COOLProtocol::getAbbreviatedMessage(&data[0], data.size()) << "].");
-    const std::string firstLine = COOLProtocol::getFirstLine(&data[0], data.size());
+    LOG_TRC("ForKitProcWSHandler: handling incoming [" << COOLProtocol::getAbbreviatedMessage(data.data(), data.size()) << "].");
+    const std::string firstLine = COOLProtocol::getFirstLine(data.data(), data.size());
     const StringVector tokens = StringVector::tokenize(firstLine.data(), firstLine.size());
 
-    if (tokens.equals(0, "segfaultcount"))
+    if (tokens.startsWith(0, "segfaultcount"))
     {
-        int count = std::stoi(tokens[1]);
-        if (count >= 0)
+        int segFaultcount = 0;
+        int killedCount = 0;
+        int oomKilledCount = 0;
+        if (COOLProtocol::getNonNegTokenInteger(tokens[0], "segfaultcount", segFaultcount)
+            && COOLProtocol::getNonNegTokenInteger(tokens[1], "killedcount", killedCount)
+            && COOLProtocol::getNonNegTokenInteger(tokens[2], "oomkilledcount", oomKilledCount))
         {
-            Admin::instance().addSegFaultCount(count);
-            LOG_INF(count << " coolkit processes crashed with segmentation fault.");
-            SigUtil::addActivity("coolkit(s) crashed");
-            UnitWSD::get().kitSegfault(count);
+            Admin::instance().addErrorExitCounters(segFaultcount, killedCount, oomKilledCount);
+
+            if (segFaultcount)
+            {
+                LOG_INF(segFaultcount << " coolkit processes crashed with segmentation fault.");
+                SigUtil::addActivity("coolkit(s) crashed");
+                UnitWSD::get().kitSegfault(segFaultcount);
+            }
+
+            if (killedCount)
+            {
+                LOG_INF(killedCount << " coolkit processes killed.");
+                SigUtil::addActivity("coolkit(s) killed");
+                UnitWSD::get().kitKilled(killedCount);
+            }
+
+            if (oomKilledCount)
+            {
+                LOG_INF(oomKilledCount << " coolkit processes killed by oom.");
+                SigUtil::addActivity("coolkit(s) killed by oom");
+                UnitWSD::get().kitOomKilled(oomKilledCount);
+            }
         }
         else
         {
-            LOG_WRN("Invalid 'segfaultcount' message received.");
+            LOG_WRN(
+                "ForKitProcWSHandler: Invalid 'segfaultcount' message received. Got:" << firstLine);
         }
     }
     else
@@ -1056,860 +1035,22 @@ COOLWSD::~COOLWSD()
 
 #if !MOBILEAPP
 
-/**
-  A custom socket poll to fetch remote config every 60 seconds.
-  If config changes it applies the new config using LayeredConfiguration.
-
-  The URI to fetch is read from the configuration too - it is either the
-  remote config itself, or the font configuration.  It si passed via the
-  uriConfigKey param.
-*/
-class RemoteJSONPoll : public SocketPoll
+void COOLWSD::requestTerminateSpareKits()
 {
-public:
-    RemoteJSONPoll(LayeredConfiguration& config, const std::string& uriConfigKey, const std::string& name, const std::string& kind)
-        : SocketPoll(name)
-        , _conf(config)
-        , _configKey(uriConfigKey)
-        , _expectedKind(kind)
-    { }
-
-    virtual ~RemoteJSONPoll() { }
-
-    virtual void handleJSON(const Poco::JSON::Object::Ptr& json) = 0;
-
-    virtual void handleUnchangedJSON()
-    { }
-
-    void start()
+    // Request existing spare kits to quit, to get replaced with ones that
+    // include the new fonts.
+    if (PrisonerPoll)
     {
-        Poco::URI remoteServerURI(_conf.getString(_configKey));
-
-        if (_expectedKind == "configuration")
-        {
-            if (remoteServerURI.empty())
+        PrisonerPoll->addCallback(
+            []
             {
-                LOG_INF("Remote " << _expectedKind << " is not specified in coolwsd.xml");
-                return; // no remote config server setup.
-            }
-#if !ENABLE_DEBUG
-            if (Util::iequal(remoteServerURI.getScheme(), "http"))
-            {
-                LOG_ERR("Remote config url should only use HTTPS protocol: " << remoteServerURI.toString());
-                return;
-            }
-#endif
-        }
-
-        startThread();
+                std::unique_lock<std::mutex> lock(NewChildrenMutex);
+                const int count = NewChildren.size();
+                for (int i = count - 1; i >= 0; --i)
+                    NewChildren[i]->requestTermination();
+            });
     }
-
-    void pollingThread()
-    {
-        while (!isStop() && !SigUtil::getShutdownRequestFlag())
-        {
-            Poco::URI remoteServerURI(_conf.getString(_configKey));
-
-            // don't try to fetch from an empty URI
-            bool valid = !remoteServerURI.empty();
-
-#if !ENABLE_DEBUG
-            if (Util::iequal(remoteServerURI.getScheme(), "http"))
-            {
-                LOG_ERR("Remote config url should only use HTTPS protocol: " << remoteServerURI.toString());
-                valid = false;
-            }
-#endif
-
-            if (valid)
-            {
-                try
-                {
-                    std::shared_ptr<http::Session> httpSession(
-                            StorageConnectionManager::getHttpSession(remoteServerURI));
-                    http::Request request(remoteServerURI.getPathAndQuery());
-
-                    //we use ETag header to check whether JSON is modified or not
-                    if (!_eTagValue.empty())
-                    {
-                        request.set("If-None-Match", _eTagValue);
-                    }
-
-                    const std::shared_ptr<const http::Response> httpResponse =
-                        httpSession->syncRequest(request);
-
-                    const http::StatusCode statusCode = httpResponse->statusLine().statusCode();
-
-                    if (statusCode == http::StatusCode::OK)
-                    {
-                        _eTagValue = httpResponse->get("ETag");
-
-                        const std::string& body = httpResponse->getBody();
-
-                        LOG_DBG("Got " << body.size() << " bytes for " << remoteServerURI.toString());
-
-                        Poco::JSON::Object::Ptr remoteJson;
-                        if (JsonUtil::parseJSON(body, remoteJson))
-                        {
-                            std::string kind;
-                            JsonUtil::findJSONValue(remoteJson, "kind", kind);
-                            if (kind == _expectedKind)
-                            {
-                                handleJSON(remoteJson);
-                            }
-                            else
-                            {
-                                LOG_ERR("Make sure that " << remoteServerURI.toString() << " contains a property 'kind' with "
-                                        "value '" << _expectedKind << "'");
-                            }
-                        }
-                        else
-                        {
-                            LOG_ERR("Could not parse the remote config JSON");
-                        }
-                    }
-                    else if (statusCode == http::StatusCode::NotModified)
-                    {
-                        LOG_DBG("Not modified since last time: " << remoteServerURI.toString());
-                        handleUnchangedJSON();
-                    }
-                    else
-                    {
-                        LOG_ERR("Remote config server has response status code: " << statusCode);
-                    }
-                }
-                catch (...)
-                {
-                    LOG_ERR("Failed to fetch remote config JSON, Please check JSON format");
-                }
-            }
-            poll(std::chrono::seconds(60));
-        }
-    }
-
-protected:
-    LayeredConfiguration& _conf;
-    std::string _eTagValue;
-
-private:
-    std::string _configKey;
-    std::string _expectedKind;
-};
-
-class RemoteConfigPoll : public RemoteJSONPoll
-{
-public:
-    RemoteConfigPoll(LayeredConfiguration& config) :
-        RemoteJSONPoll(config, "remote_config.remote_url", "remoteconfig_poll", "configuration")
-    {
-        constexpr int PRIO_JSON = -200; // highest priority
-        _persistConfig = new AppConfigMap(std::map<std::string, std::string>{});
-        _conf.addWriteable(_persistConfig, PRIO_JSON);
-    }
-
-    virtual ~RemoteConfigPoll() { }
-
-    void handleJSON(const Poco::JSON::Object::Ptr& remoteJson) override
-    {
-        std::map<std::string, std::string> newAppConfig;
-
-        fetchAliasGroups(newAppConfig, remoteJson);
-
-#if ENABLE_FEATURE_LOCK
-        fetchLockedHostPatterns(newAppConfig, remoteJson);
-        fetchLockedTranslations(newAppConfig, remoteJson);
-        fetchUnlockImageUrl(newAppConfig, remoteJson);
-#endif
-
-        fetchIndirectionEndpoint(newAppConfig, remoteJson);
-
-        fetchMonitors(newAppConfig, remoteJson);
-
-        fetchRemoteFontConfig(newAppConfig, remoteJson);
-
-        // before resetting get monitors list
-        std::vector<std::pair<std::string,int>> oldMonitors = Admin::instance().getMonitorList();
-
-        _persistConfig->reset(newAppConfig);
-
-#if ENABLE_FEATURE_LOCK
-        CommandControl::LockManager::parseLockedHost(_conf);
-#endif
-        Admin::instance().updateMonitors(oldMonitors);
-
-        HostUtil::parseAliases(_conf);
-
-        handleOptions(remoteJson);
-    }
-
-    void fetchLockedHostPatterns(std::map<std::string, std::string>& newAppConfig,
-                                 Poco::JSON::Object::Ptr remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Object::Ptr lockedHost;
-            Poco::JSON::Array::Ptr lockedHostPatterns;
-            try
-            {
-                lockedHost = remoteJson->getObject("feature_locking")->getObject("locked_hosts");
-                lockedHostPatterns = lockedHost->getArray("hosts");
-            }
-            catch (const Poco::NullPointerException&)
-            {
-                LOG_INF("Overriding locked_hosts failed because feature_locking->locked_hosts->hosts array does not exist");
-                return;
-            }
-
-            if (lockedHostPatterns.isNull() || lockedHostPatterns->size() == 0)
-            {
-                LOG_INF(
-                    "Overriding locked_hosts failed because locked_hosts->hosts array is empty or null");
-                return;
-            }
-
-            //use feature_lock.locked_hosts[@allow] entry from coolwsd.xml if feature_lock.locked_hosts.allow key doesnot exist in json
-            Poco::Dynamic::Var allow = !lockedHost->has("allow") ? Poco::Dynamic::Var(_conf.getBool("feature_lock.locked_hosts[@allow]"))
-                                                                 : lockedHost->get("allow");
-            newAppConfig.insert(std::make_pair("feature_lock.locked_hosts[@allow]", booleanToString(allow)));
-
-            if (booleanToString(allow) == "false")
-            {
-                LOG_INF("locked_hosts feature is disabled, set feature_lock->locked_hosts->allow to true to enable");
-                return;
-            }
-
-            std::size_t i;
-            for (i = 0; i < lockedHostPatterns->size(); i++)
-            {
-                std::string host;
-                Poco::JSON::Object::Ptr subObject = lockedHostPatterns->getObject(i);
-                JsonUtil::findJSONValue(subObject, "host", host);
-                Poco::Dynamic::Var readOnly = subObject->get("read_only");
-                Poco::Dynamic::Var disabledCommands = subObject->get("disabled_commands");
-
-                const std::string path =
-                    "feature_lock.locked_hosts.host[" + std::to_string(i) + "]";
-                newAppConfig.insert(std::make_pair(path, host));
-                newAppConfig.insert(std::make_pair(path + "[@read_only]", booleanToString(readOnly)));
-                newAppConfig.insert(std::make_pair(path + "[@disabled_commands]",
-                                                   booleanToString(disabledCommands)));
-            }
-
-            //if number of locked wopi host patterns defined in coolwsd.xml are greater than number of host
-            //fetched from json, overwrite the remaining host from config file to empty strings and
-            //set read_only and disabled_commands to false
-            for (;; ++i)
-            {
-                const std::string path =
-                    "feature_lock.locked_hosts.host[" + std::to_string(i) + "]";
-                if (!_conf.has(path))
-                {
-                    break;
-                }
-                newAppConfig.insert(std::make_pair(path, ""));
-                newAppConfig.insert(std::make_pair(path + "[@read_only]", "false"));
-                newAppConfig.insert(std::make_pair(path + "[@disabled_commands]", "false"));
-            }
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Failed to fetch locked_hosts, please check JSON format: " << exc.what());
-        }
-    }
-
-    void fetchAliasGroups(std::map<std::string, std::string>& newAppConfig,
-                          const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Object::Ptr aliasGroups;
-            Poco::JSON::Array::Ptr groups;
-
-            try
-            {
-                aliasGroups = remoteJson->getObject("storage")->getObject("wopi")->getObject("alias_groups");
-                groups = aliasGroups->getArray("groups");
-            }
-            catch (const Poco::NullPointerException&)
-            {
-                LOG_INF("Overriding alias_groups failed because storage->wopi->alias_groups->groups array does not exist");
-                return;
-            }
-
-            if (groups.isNull() || groups->size() == 0)
-            {
-                LOG_INF("Overriding alias_groups failed because alias_groups->groups array is empty or null");
-                return;
-            }
-
-            std::string mode = "first";
-            JsonUtil::findJSONValue(aliasGroups, "mode", mode);
-            newAppConfig.insert(std::make_pair("storage.wopi.alias_groups[@mode]", mode));
-
-            std::size_t i;
-            for (i = 0; i < groups->size(); i++)
-            {
-                Poco::JSON::Object::Ptr group = groups->getObject(i);
-                std::string host;
-                JsonUtil::findJSONValue(group, "host", host);
-                Poco::Dynamic::Var allow = group->get("allow");
-                const std::string path =
-                    "storage.wopi.alias_groups.group[" + std::to_string(i) + ']';
-
-                newAppConfig.insert(std::make_pair(path + ".host", host));
-                newAppConfig.insert(std::make_pair(path + ".host[@allow]", booleanToString(allow)));
-#if ENABLE_FEATURE_LOCK
-                std::string unlockLink;
-                JsonUtil::findJSONValue(group, "unlock_link", unlockLink);
-                newAppConfig.insert(std::make_pair(path + ".unlock_link", unlockLink));
-#endif
-                Poco::JSON::Array::Ptr aliases = group->getArray("aliases");
-
-                size_t j = 0;
-                if (aliases)
-                {
-                    auto it = aliases->begin();
-                    for (; j < aliases->size(); j++)
-                    {
-                        const std::string aliasPath = path + ".alias[" + std::to_string(j) + ']';
-                        newAppConfig.insert(std::make_pair(aliasPath, it->toString()));
-                        it++;
-                    }
-                }
-                for (;; j++)
-                {
-                    const std::string aliasPath = path + ".alias[" + std::to_string(j) + ']';
-                    if (!_conf.has(aliasPath))
-                    {
-                        break;
-                    }
-                    newAppConfig.insert(std::make_pair(aliasPath, ""));
-                }
-            }
-
-            //if number of alias_groups defined in configuration are greater than number of alias_group
-            //fetched from json, overwrite the remaining alias_groups from config file to empty strings and
-            for (;; i++)
-            {
-                const std::string path =
-                    "storage.wopi.alias_groups.group[" + std::to_string(i) + "].host";
-                if (!_conf.has(path))
-                {
-                    break;
-                }
-                newAppConfig.insert(std::make_pair(path, ""));
-                newAppConfig.insert(std::make_pair(path + "[@allowed]", "false"));
-            }
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Fetching of alias groups failed with error: " << exc.what()
-                                                                   << ", please check JSON format");
-        }
-    }
-
-    void fetchRemoteFontConfig(std::map<std::string, std::string>& newAppConfig,
-                               const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Object::Ptr remoteFontConfig = remoteJson->getObject("remote_font_config");
-
-            std::string url;
-            if (JsonUtil::findJSONValue(remoteFontConfig, "url", url))
-                newAppConfig.insert(std::make_pair("remote_font_config.url", url));
-        }
-        catch (const Poco::NullPointerException&)
-        {
-            LOG_INF("Overriding the remote font config URL failed because the remote_font_config entry does not exist");
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Failed to fetch remote_font_config, please check JSON format: " << exc.what());
-        }
-    }
-
-    void fetchLockedTranslations(std::map<std::string, std::string>& newAppConfig,
-                                 const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Array::Ptr lockedTranslations;
-            try
-            {
-                lockedTranslations =
-                    remoteJson->getObject("feature_locking")->getArray("translations");
-            }
-            catch (const Poco::NullPointerException&)
-            {
-                LOG_INF(
-                    "Overriding translations failed because feature_locking->translations array "
-                    "does not exist");
-                return;
-            }
-
-            if (lockedTranslations.isNull() || lockedTranslations->size() == 0)
-            {
-                LOG_INF("Overriding feature_locking->translations failed because array is empty or "
-                        "null");
-                return;
-            }
-
-            std::size_t i;
-            for (i = 0; i < lockedTranslations->size(); i++)
-            {
-                Poco::JSON::Object::Ptr translation = lockedTranslations->getObject(i);
-                std::string language;
-                //default values if the one of the entry is missing in json
-                std::string title = _conf.getString("feature_lock.unlock_title", "");
-                std::string description = _conf.getString("feature_lock.unlock_description", "");
-                std::string writerHighlights =
-                    _conf.getString("feature_lock.writer_unlock_highlights", "");
-                std::string impressHighlights =
-                    _conf.getString("feature_lock.impress_unlock_highlights", "");
-                std::string calcHighlights =
-                    _conf.getString("feature_lock.calc_unlock_highlights", "");
-                std::string drawHighlights =
-                    _conf.getString("feature_lock.draw_unlock_highlights", "");
-
-                JsonUtil::findJSONValue(translation, "language", language);
-                JsonUtil::findJSONValue(translation, "unlock_title", title);
-                JsonUtil::findJSONValue(translation, "unlock_description", description);
-                JsonUtil::findJSONValue(translation, "writer_unlock_highlights", writerHighlights);
-                JsonUtil::findJSONValue(translation, "calc_unlock_highlights", calcHighlights);
-                JsonUtil::findJSONValue(translation, "impress_unlock_highlights",
-                                        impressHighlights);
-                JsonUtil::findJSONValue(translation, "draw_unlock_highlights", drawHighlights);
-
-                const std::string path =
-                    "feature_lock.translations.language[" + std::to_string(i) + ']';
-
-                newAppConfig.insert(std::make_pair(path + "[@name]", language));
-                newAppConfig.insert(std::make_pair(path + ".unlock_title", title));
-                newAppConfig.insert(std::make_pair(path + ".unlock_description", description));
-                newAppConfig.insert(
-                    std::make_pair(path + ".writer_unlock_highlights", writerHighlights));
-                newAppConfig.insert(
-                    std::make_pair(path + ".calc_unlock_highlights", calcHighlights));
-                newAppConfig.insert(
-                    std::make_pair(path + ".impress_unlock_highlights", impressHighlights));
-                newAppConfig.insert(
-                    std::make_pair(path + ".draw_unlock_highlights", drawHighlights));
-            }
-
-            //if number of translations defined in configuration are greater than number of translation
-            //fetched from json, overwrite the remaining translations from config file to empty strings
-            for (;; i++)
-            {
-                const std::string path =
-                    "feature_lock.translations.language[" + std::to_string(i) + "][@name]";
-                if (!_conf.has(path))
-                {
-                    break;
-                }
-                newAppConfig.insert(std::make_pair(path, ""));
-            }
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Failed to fetch feature_locking->translations, please check JSON format: " << exc.what());
-        }
-    }
-
-    void fetchUnlockImageUrl(std::map<std::string, std::string>& newAppConfig,
-                             const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Object::Ptr featureLocking = remoteJson->getObject("feature_locking");
-
-            std::string unlockImage;
-            if (JsonUtil::findJSONValue(featureLocking, "unlock_image", unlockImage))
-            {
-                newAppConfig.insert(std::make_pair("feature_lock.unlock_image", unlockImage));
-            }
-        }
-        catch (const Poco::NullPointerException&)
-        {
-            LOG_INF("Overriding unlock_image URL failed because the unlock_image entry does not "
-                    "exist");
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("Failed to fetch unlock_image, please check JSON format: " << exc.what());
-        }
-    }
-
-    void fetchIndirectionEndpoint(std::map<std::string, std::string>& newAppConfig,
-                                  const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            Poco::JSON::Object::Ptr indirectionEndpoint =
-                remoteJson->getObject("indirection_endpoint");
-
-            std::string url;
-            if (JsonUtil::findJSONValue(indirectionEndpoint, "url", url))
-            {
-                newAppConfig.insert(std::make_pair("indirection_endpoint.url", url));
-            }
-        }
-        catch (const Poco::NullPointerException&)
-        {
-            LOG_INF("Overriding indirection_endpoint.url failed because the indirection_endpoint.url "
-                    "entry does not "
-                    "exist");
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR(
-                "Failed to fetch indirection_endpoint, please check JSON format: " << exc.what());
-        }
-    }
-
-    void fetchMonitors(std::map<std::string, std::string>& newAppConfig,
-                       const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        Poco::JSON::Array::Ptr monitors;
-        try
-        {
-            monitors = remoteJson->getArray("monitors");
-        }
-        catch (const Poco::NullPointerException&)
-        {
-            LOG_INF("Overriding monitor failed because array "
-                    "does not exist");
-            return;
-        }
-
-        if (monitors.isNull() || monitors->size() == 0)
-        {
-            LOG_INF("Overriding monitors failed because array is empty or "
-                    "null");
-            return;
-        }
-        std::size_t i;
-        for (i = 0; i < monitors->size(); i++)
-            newAppConfig.insert(
-                std::make_pair("monitors.monitor[" + std::to_string(i) + ']', monitors->get(i).toString()));
-
-        //if number of monitors defined in configuration are greater than number of monitors
-        //fetched from json or if the number of monitors shrinks with new json,
-        //overwrite the remaining monitors from config file to empty strings
-        for (;; i++)
-        {
-            const std::string path =
-                "monitors.monitor[" + std::to_string(i) + ']';
-            if (!_conf.has(path))
-            {
-                break;
-            }
-            newAppConfig.insert(std::make_pair(path, ""));
-        }
-    }
-
-    void handleOptions(const Poco::JSON::Object::Ptr& remoteJson)
-    {
-        try
-        {
-            std::string buyProduct;
-            JsonUtil::findJSONValue(remoteJson, "buy_product_url", buyProduct);
-            Poco::URI buyProductUri(buyProduct);
-            {
-                std::lock_guard<std::mutex> lock(COOLWSD::RemoteConfigMutex);
-                COOLWSD::BuyProductUrl = buyProductUri.toString();
-            }
-        }
-        catch (const std::exception& exc)
-        {
-            LOG_ERR("handleOptions: Exception " << exc.what());
-        }
-    }
-
-    //sets property to false if it is missing from JSON
-    //and returns std::string
-    std::string booleanToString(Poco::Dynamic::Var& booleanFlag)
-    {
-        if (booleanFlag.isEmpty())
-        {
-            booleanFlag = "false";
-        }
-        return booleanFlag.toString();
-    }
-
-private:
-    // keeps track of remote config layer
-    Poco::AutoPtr<AppConfigMap> _persistConfig = nullptr;
-};
-
-class RemoteFontConfigPoll : public RemoteJSONPoll
-{
-public:
-    RemoteFontConfigPoll(LayeredConfiguration& config)
-        : RemoteJSONPoll(config, "remote_font_config.url", "remotefontconfig_poll", "fontconfiguration")
-    {
-    }
-
-    virtual ~RemoteFontConfigPoll() { }
-
-    void handleJSON(const Poco::JSON::Object::Ptr& remoteJson) override
-    {
-        // First mark all fonts we have downloaded previously as "inactive" to be able to check if
-        // some font gets deleted from the list in the JSON file.
-        for (auto& it : fonts)
-            it.second.active = false;
-
-        // Just pick up new fonts.
-        auto fontsPtr = remoteJson->getArray("fonts");
-        if (!fontsPtr)
-        {
-            LOG_WRN("The 'fonts' property does not exist or is not an array");
-            return;
-        }
-
-        for (std::size_t i = 0; i < fontsPtr->size(); i++)
-        {
-            if (!fontsPtr->isObject(i))
-                LOG_WRN("Element " << i << " in fonts array is not an object");
-            else
-            {
-                const auto fontPtr = fontsPtr->getObject(i);
-                const auto uriPtr = fontPtr->get("uri");
-                if (uriPtr.isEmpty() || !uriPtr.isString())
-                    LOG_WRN("Element in fonts array does not have an 'uri' property or it is not a string");
-                else
-                {
-                    const std::string uri = uriPtr.toString();
-                    const auto stampPtr = fontPtr->get("stamp");
-
-                    if (!stampPtr.isEmpty() && !stampPtr.isString())
-                        LOG_WRN("Element in fonts array with uri '" << uri << "' has a stamp property that is not a string, ignored");
-                    else if (fonts.count(uri) == 0)
-                    {
-                        // First case: This font has not been downloaded.
-                        if (!stampPtr.isEmpty())
-                        {
-                            if (downloadPlain(uri))
-                            {
-                                fonts[uri].stamp = stampPtr.toString();
-                                fonts[uri].active = true;
-                            }
-                        }
-                        else
-                        {
-                            if (downloadWithETag(uri, ""))
-                            {
-                                fonts[uri].active = true;
-                            }
-                        }
-                    }
-                    else if (!stampPtr.isEmpty() && stampPtr.toString() != fonts[uri].stamp)
-                    {
-                        // Second case: Font has been downloaded already, has a "stamp" property,
-                        // and that has been changed in the JSON since it was downloaded.
-                        restartForKitAndReDownloadConfigFile();
-                        break;
-                    }
-                    else if (!stampPtr.isEmpty())
-                    {
-                        // Third case: Font has been downloaded already, has a "stamp" property, and
-                        // that has *not* changed in the JSON since it was downloaded.
-                        fonts[uri].active = true;
-                    }
-                    else
-                    {
-                        // Last case: Font has been downloaded but does not have a "stamp" property.
-                        // Use ETag.
-                        if (!eTagUnchanged(uri, fonts[uri].eTag))
-                        {
-                            restartForKitAndReDownloadConfigFile();
-                            break;
-                        }
-                        fonts[uri].active = true;
-                    }
-                }
-            }
-        }
-
-        // Any font that has been deleted from the JSON needs to be removed on this side, too.
-        for (const auto &it : fonts)
-        {
-            if (!it.second.active)
-            {
-                LOG_DBG("Font no longer mentioned in the remote font config: " << it.first);
-                restartForKitAndReDownloadConfigFile();
-                break;
-            }
-        }
-    }
-
-    void handleUnchangedJSON() override
-    {
-        // Iterate over the fonts that were mentioned in the JSON file when it was last downloaded.
-        for (auto& it : fonts)
-        {
-            // If the JSON has a "stamp" for the font, and we have already downloaded it, by
-            // definition we don't need to do anything when the JSON file has not changed.
-            if (it.second.stamp != "" && it.second.pathName != "")
-                continue;
-
-            // If the JSON has a "stamp" it must have been downloaded already. Should we even
-            // assert() that?
-            if (it.second.stamp != "" && it.second.pathName == "")
-            {
-                LOG_WRN("Font at " << it.first << " was not downloaded, should have been");
-                continue;
-            }
-
-            // Otherwise use the ETag to check if the font file needs re-downloading.
-            if (!eTagUnchanged(it.first, it.second.eTag))
-            {
-                restartForKitAndReDownloadConfigFile();
-                break;
-            }
-        }
-    }
-
-private:
-    bool downloadPlain(const std::string& uri)
-    {
-        const Poco::URI fontUri{uri};
-        std::shared_ptr<http::Session> httpSession(StorageConnectionManager::getHttpSession(fontUri));
-        http::Request request(fontUri.getPathAndQuery());
-
-        request.set("User-Agent", http::getAgentString());
-
-        const std::shared_ptr<const http::Response> httpResponse
-            = httpSession->syncRequest(request);
-
-        return finishDownload(uri, httpResponse);
-    }
-
-    bool eTagUnchanged(const std::string& uri, const std::string& oldETag)
-    {
-        const Poco::URI fontUri{uri};
-        std::shared_ptr<http::Session> httpSession(StorageConnectionManager::getHttpSession(fontUri));
-        http::Request request(fontUri.getPathAndQuery());
-
-        if (!oldETag.empty())
-        {
-            request.set("If-None-Match", oldETag);
-        }
-
-        request.set("User-Agent", http::getAgentString());
-
-        const std::shared_ptr<const http::Response> httpResponse
-            = httpSession->syncRequest(request);
-
-        if (httpResponse->statusLine().statusCode() == http::StatusCode::NotModified)
-        {
-            LOG_DBG("Not modified since last time: " << uri);
-            return true;
-        }
-
-        return false;
-    }
-
-    bool downloadWithETag(const std::string& uri, const std::string& oldETag)
-    {
-        const Poco::URI fontUri{uri};
-        std::shared_ptr<http::Session> httpSession(StorageConnectionManager::getHttpSession(fontUri));
-        http::Request request(fontUri.getPathAndQuery());
-
-        if (!oldETag.empty())
-        {
-            request.set("If-None-Match", oldETag);
-        }
-
-        request.set("User-Agent", http::getAgentString());
-
-        const std::shared_ptr<const http::Response> httpResponse
-            = httpSession->syncRequest(request);
-
-        if (httpResponse->statusLine().statusCode() == http::StatusCode::NotModified)
-        {
-            LOG_DBG("Not modified since last time: " << uri);
-            return true;
-        }
-
-        if (!finishDownload(uri, httpResponse))
-            return false;
-
-        fonts[uri].eTag = httpResponse->get("ETag");
-        return true;
-    }
-
-    bool finishDownload(const std::string& uri, const std::shared_ptr<const http::Response> httpResponse)
-    {
-        if (httpResponse->statusLine().statusCode() != http::StatusCode::OK)
-        {
-            LOG_WRN("Could not fetch " << uri);
-            return false;
-        }
-
-        const std::string& body = httpResponse->getBody();
-
-        // We intentionally use a new file name also when an updated version of a font is
-        // downloaded. It causes trouble to rewrite the same file, in case it is in use in some Kit
-        // process at the moment.
-
-        // We don't remove the old file either as that also causes problems.
-
-        // And in reality, it is a bit unclear how likely it even is that fonts downloaded through
-        // this mechanism even will be updated.
-        const std::string fontFile =
-            COOLWSD::TmpFontDir + '/' + Util::encodeId(Util::rng::getNext()) + ".ttf";
-
-        std::ofstream fontStream(fontFile);
-        fontStream.write(body.data(), body.size());
-        if (!fontStream.good())
-        {
-            LOG_ERR("Could not write " << body.size() << " bytes to [" << fontFile << ']');
-            return false;
-        }
-
-        LOG_DBG("Got " << body.size() << " bytes from [" << uri << "] and wrote to [" << fontFile
-                       << ']');
-        fonts[uri].pathName = fontFile;
-
-        COOLWSD::sendMessageToForKit("addfont " + fontFile);
-
-        return true;
-    }
-
-    void restartForKitAndReDownloadConfigFile()
-    {
-        LOG_DBG("Downloaded font has been updated or a font has been removed. ForKit must be restarted.");
-        fonts.clear();
-        // Clear the saved ETag of the remote font configuration file so that it will be
-        // re-downloaded, and all fonts mentioned in it re-downloaded and fed to ForKit.
-        _eTagValue.clear();
-        COOLWSD::sendMessageToForKit("exit");
-    }
-
-    struct FontData
-    {
-        // Each font can have a "stamp" in the JSON that we treat just as a string. In practice it
-        // can be some timestamp, but we don't parse it. If the stamp is changed, we re-download the
-        // font file.
-        std::string stamp;
-
-        // If the font has no "stamp" property, we use the ETag mechanism to see if the font file
-        // needs to be re-downloaded.
-        std::string eTag;
-
-        // Where the font has been stored
-        std::string pathName;
-
-        // Flag that tells whether the font is mentioned in the JSON file that is being handled.
-        // Used only in handleJSON() when the JSON has been (re-)downloaded, not when the JSON was
-        // unchanged in handleUnchangedJSON().
-        bool active;
-    };
-
-    // The key of this map is the download URI of the font.
-    std::map<std::string, FontData> fonts;
-};
+}
 
 void COOLWSD::setupChildRoot(const bool UseMountNamespaces)
 {
@@ -1998,209 +1139,34 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
     StartTime = std::chrono::steady_clock::now();
 
+    // Initialize the config subsystem.
     LayeredConfiguration& conf = config();
 
-    // Add default values of new entries here, so there is a sensible default in case
-    // the setting is missing from the config file. It is possible that users do not
-    // update their config files, and we are backward compatible.
-    // These defaults should be the same
-    // 1) here
-    // 2) in the 'default' attribute in coolwsd.xml, which is for documentation
-    // 3) the default parameter of getConfigValue() call. That is used when the
-    //    setting is present in coolwsd.xml, but empty (i.e. use the default).
-    static const std::map<std::string, std::string> DefAppConfig = {
-        { "accessibility.enable", "false" },
-        { "allowed_languages", "de_DE en_GB en_US es_ES fr_FR it nl pt_BR pt_PT ru" },
-        { "admin_console.enable_pam", "false" },
-        { "child_root_path", "jails" },
-        { "file_server_root_path", "browser/.." },
-        { "enable_websocket_urp", "false" },
-        { "hexify_embedded_urls", "false" },
-        { "experimental_features", "false" },
-        { "logging.protocol", "false" },
-        // { "logging.anonymize.anonymize_user_data", "false" }, // Do not set to fallback on filename/username.
-        { "logging.color", "true" },
-        { "logging.file.property[0]", "coolwsd.log" },
-        { "logging.file.property[0][@name]", "path" },
-        { "logging.file.property[1]", "never" },
-        { "logging.file.property[1][@name]", "rotation" },
-        { "logging.file.property[2]", "true" },
-        { "logging.file.property[2][@name]", "compress" },
-        { "logging.file.property[3]", "false" },
-        { "logging.file.property[3][@name]", "flush" },
-        { "logging.file.property[4]", "10 days" },
-        { "logging.file.property[4][@name]", "purgeAge" },
-        { "logging.file.property[5]", "10" },
-        { "logging.file.property[5][@name]", "purgeCount" },
-        { "logging.file.property[6]", "true" },
-        { "logging.file.property[6][@name]", "rotateOnOpen" },
-        { "logging.file.property[7]", "false" },
-        { "logging.file.property[7][@name]", "archive" },
-        { "logging.file[@enable]", "false" },
-        { "logging.level", COOLWSD_LOGLEVEL },
-        { "logging.level_startup", "trace" },
-        { "logging.lokit_sal_log", "-INFO-WARN" },
-        { "logging.docstats", "false" },
-        { "logging.userstats", "false" },
-        { "logging.disable_server_audit", "false" },
-        { "browser_logging", "false" },
-        { "mount_jail_tree", "true" },
-        { "net.connection_timeout_secs", "30" },
-        { "net.listen", "any" },
-        { "net.proto", "all" },
-        { "net.service_root", "" },
-        { "net.proxy_prefix", "false" },
-        { "net.content_security_policy", "" },
-        { "net.frame_ancestors", "" },
-        { "num_prespawn_children", NUM_PRESPAWN_CHILDREN },
-        { "per_document.always_save_on_exit", "false" },
-        { "per_document.autosave_duration_secs", "300" },
-        { "per_document.cleanup.cleanup_interval_ms", "10000" },
-        { "per_document.cleanup.bad_behavior_period_secs", "60" },
-        { "per_document.cleanup.idle_time_secs", "300" },
-        { "per_document.cleanup.limit_dirty_mem_mb", "3072" },
-        { "per_document.cleanup.limit_cpu_per", "85" },
-        { "per_document.cleanup.lost_kit_grace_period_secs", "120" },
-        { "per_document.cleanup[@enable]", "true" },
-        { "per_document.idle_timeout_secs", "3600" },
-        { "per_document.idlesave_duration_secs", "30" },
-        { "per_document.limit_file_size_mb", "0" },
-        { "per_document.limit_num_open_files", "0" },
-        { "per_document.limit_load_secs", "100" },
-        { "per_document.limit_store_failures", "5" },
-        { "per_document.limit_convert_secs", "100" },
-        { "per_document.limit_stack_mem_kb", "8000" },
-        { "per_document.limit_virt_mem_mb", "0" },
-        { "per_document.max_concurrency", "4" },
-        { "per_document.min_time_between_saves_ms", "500" },
-        { "per_document.min_time_between_uploads_ms", "5000" },
-        { "per_document.batch_priority", "5" },
-        { "per_document.pdf_resolution_dpi", "96" },
-        { "per_document.redlining_as_comments", "false" },
-        { "per_view.idle_timeout_secs", "900" },
-        { "per_view.out_of_focus_timeout_secs", "300" },
-        { "per_view.custom_os_info", "" },
-        { "per_view.min_saved_message_timeout_secs", "0"},
-        { "security.capabilities", "true" },
-        { "security.seccomp", "true" },
-        { "security.jwt_expiry_secs", "1800" },
-        { "security.enable_metrics_unauthenticated", "false" },
-        { "certificates.database_path", "" },
-        { "server_name", "" },
-        { "ssl.ca_file_path", COOLWSD_CONFIGDIR "/ca-chain.cert.pem" },
-        { "ssl.cert_file_path", COOLWSD_CONFIGDIR "/cert.pem" },
-        { "ssl.cipher_list", "" },
-        { "ssl.enable", "true" },
-        { "ssl.hpkp.max_age[@enable]", "true" },
-        { "ssl.hpkp.report_uri[@enable]", "false" },
-        { "ssl.hpkp[@enable]", "false" },
-        { "ssl.hpkp[@report_only]", "false" },
-        { "ssl.sts.enabled", "false" },
-        { "ssl.sts.max_age", "31536000" },
-        { "ssl.key_file_path", COOLWSD_CONFIGDIR "/key.pem" },
-        { "ssl.termination", "false" },
-#if !MOBILEAPP
-        { "ssl.ssl_verification", SSL_VERIFY },
-#endif
-        { "stop_on_config_change", "false" },
-        { "storage.filesystem[@allow]", "false" },
-        // "storage.ssl.enable" - deliberately not set; for back-compat
-        { "storage.ssl.ca_file_path", "" },
-        { "storage.ssl.cert_file_path", "" },
-        { "storage.ssl.cipher_list", "" },
-        { "storage.ssl.key_file_path", "" },
-        { "storage.wopi.max_file_size", "0" },
-        { "storage.wopi[@allow]", "true" },
-        { "storage.wopi.locking.refresh", "900" },
-        { "storage.wopi.is_legacy_server", "false" },
-        { "sys_template_path", "systemplate" },
-        { "trace_event[@enable]", "false" },
-        { "trace.path[@compress]", "true" },
-        { "trace.path[@snapshot]", "false" },
-        { "trace[@enable]", "false" },
-        { "welcome.enable", "false" },
-        { "home_mode.enable", "false" },
-        { "feedback.show", "true" },
-        { "overwrite_mode.enable", "false" },
-#if ENABLE_FEATURE_LOCK
-        { "feature_lock.locked_hosts[@allow]", "false" },
-        { "feature_lock.locked_hosts.fallback[@read_only]", "false" },
-        { "feature_lock.locked_hosts.fallback[@disabled_commands]", "false" },
-        { "feature_lock.locked_hosts.host[0]", "localhost" },
-        { "feature_lock.locked_hosts.host[0][@read_only]", "false" },
-        { "feature_lock.locked_hosts.host[0][@disabled_commands]", "false" },
-        { "feature_lock.is_lock_readonly", "false" },
-        { "feature_lock.locked_commands", LOCKED_COMMANDS },
-        { "feature_lock.unlock_title", UNLOCK_TITLE },
-        { "feature_lock.unlock_link", UNLOCK_LINK },
-        { "feature_lock.unlock_description", UNLOCK_DESCRIPTION },
-        { "feature_lock.writer_unlock_highlights", WRITER_UNLOCK_HIGHLIGHTS },
-        { "feature_lock.calc_unlock_highlights", CALC_UNLOCK_HIGHLIGHTS },
-        { "feature_lock.impress_unlock_highlights", IMPRESS_UNLOCK_HIGHLIGHTS },
-        { "feature_lock.draw_unlock_highlights", DRAW_UNLOCK_HIGHLIGHTS },
-#endif
-#if ENABLE_FEATURE_RESTRICTION
-        { "restricted_commands", "" },
-#endif
-        { "user_interface.mode", "default" },
-        { "user_interface.use_integration_theme", "true" },
-        { "user_interface.statusbar_save_indicator", "true" },
-        { "quarantine_files[@enable]", "false" },
-        { "quarantine_files.limit_dir_size_mb", "250" },
-        { "quarantine_files.max_versions_to_maintain", "5" },
-        { "quarantine_files.path", "quarantine" },
-        { "quarantine_files.expiry_min", "3000" },
-        { "remote_config.remote_url", "" },
-        { "storage.wopi.alias_groups[@mode]", "first" },
-        { "languagetool.base_url", "" },
-        { "languagetool.api_key", "" },
-        { "languagetool.user_name", "" },
-        { "languagetool.enabled", "false" },
-        { "languagetool.ssl_verification", "true" },
-        { "languagetool.rest_protocol", "" },
-        { "deepl.api_url", "" },
-        { "deepl.auth_key", "" },
-        { "deepl.enabled", "false" },
-        { "zotero.enable", "true" },
-        { "indirection_endpoint.geolocation_setup.enable", "false" },
-        { "indirection_endpoint.geolocation_setup.timezone", "" },
-        { "indirection_endpoint.server_name", "" },
-        { "indirection_endpoint.url", "" },
-#if !MOBILEAPP
-        { "help_url", HELP_URL },
-#endif
-        { "product_name", APP_NAME },
-        { "admin_console.logging.admin_login", "true" },
-        { "admin_console.logging.metrics_fetch", "true" },
-        { "admin_console.logging.monitor_connect", "true" },
-        { "admin_console.logging.admin_action", "true" },
-        { "wasm.enable", "false" },
-        { "wasm.force", "false" },
-        { "document_signing.enable", "true" },
-        { "extra_export_formats.impress_swf", "false" },
-        { "extra_export_formats.impress_bmp", "false" },
-        { "extra_export_formats.impress_gif", "false" },
-        { "extra_export_formats.impress_png", "false" },
-        { "extra_export_formats.impress_svg", "false" },
-        { "extra_export_formats.impress_tiff", "false" },
-    };
+    const std::map<std::string, std::string> DefAppConfig = ConfigUtil::getDefaultAppConfig();
 
     // Set default values, in case they are missing from the config file.
-    Poco::AutoPtr<AppConfigMap> defConfig(new AppConfigMap(DefAppConfig));
+    Poco::AutoPtr<ConfigUtil::AppConfigMap> defConfig(new ConfigUtil::AppConfigMap(DefAppConfig));
     conf.addWriteable(defConfig, PRIO_SYSTEM); // Lowest priority
 
 #if !MOBILEAPP
 
     // Load default configuration files, with name independent
     // of Poco's view of app-name, from local file if present.
+    // Fallback to the COOLWSD_CONFIGDIR or --config-file path.
     Poco::Path configPath("coolwsd.xml");
-    if (Poco::Util::Application::findFile(configPath))
-        loadConfiguration(configPath.toString(), PRIO_DEFAULT);
-    else
-    {
-        // Fallback to the COOLWSD_CONFIGDIR or --config-file path.
-        loadConfiguration(ConfigFile, PRIO_DEFAULT);
-    }
+    const std::string configFilePath =
+        Poco::Util::Application::findFile(configPath) ? configPath.toString() : ConfigFile;
+    loadConfiguration(configFilePath, PRIO_DEFAULT);
+
+    // Override any settings passed on the command-line or via environment variables
+    if (UseEnvVarOptions)
+        initializeEnvOptions();
+    Poco::AutoPtr<ConfigUtil::AppConfigMap> overrideConfig(
+        new ConfigUtil::AppConfigMap(_overrideSettings));
+    conf.addWriteable(overrideConfig, PRIO_APPLICATION); // Highest priority
+
+    // This caches some oft-used settings and must come after overriding.
+    ConfigUtil::initialize(&config());
 
     // Load extra ("plug-in") configuration files, if present
     Poco::File dir(ConfigDir);
@@ -2220,24 +1186,18 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
         }
     }
 
-    // Override any settings passed on the command-line or via environment variables
-    if (UseEnvVarOptions)
-        initializeEnvOptions();
-    Poco::AutoPtr<AppConfigMap> overrideConfig(new AppConfigMap(_overrideSettings));
-    conf.addWriteable(overrideConfig, PRIO_APPLICATION); // Highest priority
-
     if (!UnitTestLibrary.empty())
     {
         UnitWSD::defaultConfigure(conf);
     }
 
     // Experimental features.
-    EnableExperimental = getConfigValue<bool>(conf, "experimental_features", false);
+    EnableExperimental = ConfigUtil::getConfigValue<bool>(conf, "experimental_features", false);
 
-    EnableAccessibility = getConfigValue<bool>(conf, "accessibility.enable", false);
+    EnableAccessibility = ConfigUtil::getConfigValue<bool>(conf, "accessibility.enable", false);
 
     // Setup user interface mode
-    UserInterface = getConfigValue<std::string>(conf, "user_interface.mode", "default");
+    UserInterface = ConfigUtil::getConfigValue<std::string>(conf, "user_interface.mode", "default");
 
     if (UserInterface == "compact")
         UserInterface = "classic";
@@ -2249,16 +1209,20 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
         UserInterface = "notebookbar";
 
     // Set the log-level after complete initialization to force maximum details at startup.
-    LogLevel = getConfigValue<std::string>(conf, "logging.level", "trace");
-    LogDisabledAreas = getConfigValue<std::string>(conf, "logging.disabled_areas", "Socket,WebSocket,Admin");
-    MostVerboseLogLevelSettableFromClient = getConfigValue<std::string>(conf, "logging.most_verbose_level_settable_from_client", "notice");
-    LeastVerboseLogLevelSettableFromClient = getConfigValue<std::string>(conf, "logging.least_verbose_level_settable_from_client", "fatal");
+    LogLevel = ConfigUtil::getConfigValue<std::string>(conf, "logging.level", "trace");
+    LogDisabledAreas = ConfigUtil::getConfigValue<std::string>(conf, "logging.disabled_areas",
+                                                               "Socket,WebSocket,Admin");
+    MostVerboseLogLevelSettableFromClient = ConfigUtil::getConfigValue<std::string>(
+        conf, "logging.most_verbose_level_settable_from_client", "notice");
+    LeastVerboseLogLevelSettableFromClient = ConfigUtil::getConfigValue<std::string>(
+        conf, "logging.least_verbose_level_settable_from_client", "fatal");
 
     setenv("COOL_LOGLEVEL", LogLevel.c_str(), true);
     setenv("COOL_LOGDISABLED_AREAS", LogDisabledAreas.c_str(), true);
 
 #if !ENABLE_DEBUG
-    const std::string salLog = getConfigValue<std::string>(conf, "logging.lokit_sal_log", "-INFO-WARN");
+    const std::string salLog =
+        ConfigUtil::getConfigValue<std::string>(conf, "logging.lokit_sal_log", "-INFO-WARN");
     setenv("SAL_LOG", salLog.c_str(), 0);
 #endif
 
@@ -2268,14 +1232,16 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     // disable color since this isn't going to the terminal.
     constexpr bool withColor = false;
     constexpr bool logToFile = false;
+    constexpr bool logToFileUICmd = false;
 #else
-    const bool withColor = getConfigValue<bool>(conf, "logging.color", true) && isatty(fileno(stderr));
+    const bool withColor =
+        ConfigUtil::getConfigValue<bool>(conf, "logging.color", true) && isatty(fileno(stderr));
     if (withColor)
     {
         setenv("COOL_LOGCOLOR", "1", true);
     }
 
-    const auto logToFile = getConfigValue<bool>(conf, "logging.file[@enable]", false);
+    const auto logToFile = ConfigUtil::getConfigValue<bool>(conf, "logging.file[@enable]", false);
     std::map<std::string, std::string> logProperties;
     for (std::size_t i = 0; ; ++i)
     {
@@ -2304,29 +1270,78 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
                       << std::endl;
         }
     }
+
+    // Do the same for ui command logging
+    const auto logToFileUICmd = ConfigUtil::getConfigValue<bool>(conf, "logging_ui_cmd.file[@enable]", false);
+    std::map<std::string, std::string> logPropertiesUICmd;
+    for (std::size_t i = 0; ; ++i)
+    {
+        const std::string confPath = "logging_ui_cmd.file.property[" + std::to_string(i) + ']';
+        const std::string confName = config().getString(confPath + "[@name]", "");
+        if (!confName.empty())
+        {
+            const std::string value = config().getString(confPath, "");
+            logPropertiesUICmd.emplace(confName, value);
+        }
+        else if (!config().has(confPath))
+        {
+            break;
+        }
+    }
+
+    // Setup the logfile envar for the kit processes.
+    if (logToFileUICmd)
+    {
+        const auto it = logPropertiesUICmd.find("path");
+        if (it != logPropertiesUICmd.end())
+        {
+            setenv("COOL_LOGFILE_UICMD", "1", true);
+            setenv("COOL_LOGFILENAME_UICMD", it->second.c_str(), true);
+            std::cerr << "\nLogging UI Commands to file: " << it->second.c_str() << std::endl;
+        }
+        const bool merge = ConfigUtil::getConfigValue<bool>(conf, "logging_ui_cmd.merge", true);
+        const bool logEndtime =
+            ConfigUtil::getConfigValue<bool>(conf, "logging_ui_cmd.merge_display_end_time", false);
+        if (merge)
+        {
+            setenv("COOL_LOG_UICMD_MERGE", "1", true);
+        }
+        if (logEndtime)
+        {
+            setenv("COOL_LOG_UICMD_END_TIME", "1", true);
+        }
+    }
 #endif
 
     // Log at trace level until we complete the initialization.
-    LogLevelStartup = getConfigValue<std::string>(conf, "logging.level_startup", "trace");
+    LogLevelStartup =
+        ConfigUtil::getConfigValue<std::string>(conf, "logging.level_startup", "trace");
     setenv("COOL_LOGLEVEL_STARTUP", LogLevelStartup.c_str(), true);
 
-    Log::initialize("wsd", LogLevelStartup, withColor, logToFile, logProperties);
+    Log::initialize("wsd", LogLevelStartup, withColor, logToFile, logProperties, logToFileUICmd, logPropertiesUICmd);
     if (LogLevel != LogLevelStartup)
     {
         LOG_INF("Setting log-level to [" << LogLevelStartup << "] and delaying setting to ["
                 << LogLevel << "] until after WSD initialization.");
     }
 
-    if (getConfigValue<bool>(conf, "browser_logging", false))
+    if (ConfigUtil::getConfigValue<bool>(conf, "browser_logging", false))
     {
         LogToken = Util::rng::getHexString(16);
     }
 
     // First log entry.
     ServerName = config().getString("server_name");
-    LOG_INF("Initializing coolwsd server [" << ServerName << "]. Experimental features are "
-                                            << (EnableExperimental ? "enabled." : "disabled."));
+    LOG_INF("Initializing coolwsd " << Util::getCoolVersion() << " server [" << ServerName
+                                    << "]. Experimental features are "
+                                    << (EnableExperimental ? "enabled." : "disabled."));
 
+    std::ostringstream ossConfig;
+    ossConfig << "Loaded config file [" << configFilePath << "] (non-default values):\n";
+    ossConfig << ConfigUtil::getLoggableConfig(conf);
+
+    LoggableConfigEntries = ossConfig.str();
+    LOG_INF(LoggableConfigEntries);
 
     // Initialize the UnitTest subsystem.
     if (!UnitWSD::init(UnitWSD::UnitType::Wsd, UnitTestLibrary))
@@ -2338,18 +1353,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     // Allow UT to manipulate before using configuration values.
     UnitWSD::get().configure(conf);
 
-    // net::Defaults: Set MaxConnections field and allow UT to manipulate before using
-    {
-        net::Defaults& defaults = net::Defaults::get();
-        net::Defaults::get().MaxConnections = std::max<size_t>(3, MAX_CONNECTIONS);
-        UnitWSD::get().configNet(defaults);
-    }
     // Trace Event Logging.
-    EnableTraceEventLogging = getConfigValue<bool>(conf, "trace_event[@enable]", false);
+    EnableTraceEventLogging = ConfigUtil::getConfigValue<bool>(conf, "trace_event[@enable]", false);
 
     if (EnableTraceEventLogging)
     {
-        const auto traceEventFile = getConfigValue<std::string>(conf, "trace_event.path", COOLWSD_TRACEEVENTFILE);
+        const auto traceEventFile = ConfigUtil::getConfigValue<std::string>(
+            conf, "trace_event.path", COOLWSD_TRACEEVENTFILE);
         LOG_INF("Trace Event file is " << traceEventFile << ".");
         TraceEventFile = fopen(traceEventFile.c_str(), "w");
         if (TraceEventFile != NULL)
@@ -2372,17 +1382,16 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     }
 
     // Check deprecated settings.
-    bool reuseCookies = false;
-    if (getSafeConfig(conf, "storage.wopi.reuse_cookies", reuseCookies))
-        LOG_WRN("NOTE: Deprecated config option storage.wopi.reuse_cookies - no longer supported.");
+    if (ConfigUtil::hasProperty("storage.wopi.reuse_cookies"))
+        LOG_WRN("NOTE: Deprecated config option storage.wopi.reuse_cookies is no longer supported");
 
 #if !MOBILEAPP
-    COOLWSD::WASMState = getConfigValue<bool>(conf, "wasm.enable", false)
+    COOLWSD::WASMState = ConfigUtil::getConfigValue<bool>(conf, "wasm.enable", false)
                              ? COOLWSD::WASMActivationState::Enabled
                              : COOLWSD::WASMActivationState::Disabled;
 
 #if ENABLE_DEBUG
-    if (getConfigValue<bool>(conf, "wasm.force", false))
+    if (ConfigUtil::getConfigValue<bool>(conf, "wasm.force", false))
     {
         if (COOLWSD::WASMState != COOLWSD::WASMActivationState::Enabled)
         {
@@ -2404,14 +1413,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     LOG_INF("Anonymization of user-data is permanently enabled.");
 #else
     LOG_INF("Anonymization of user-data is configurable.");
-    bool haveAnonymizeUserDataConfig = false;
-    if (getSafeConfig(conf, "logging.anonymize.anonymize_user_data", AnonymizeUserData))
-        haveAnonymizeUserDataConfig = true;
+    const bool haveAnonymizeUserDataConfig =
+        ConfigUtil::getRawConfig(conf, "logging.anonymize.anonymize_user_data", AnonymizeUserData);
 
     bool anonymizeFilenames = false;
     bool anonymizeUsernames = false;
-    if (getSafeConfig(conf, "logging.anonymize.usernames", anonymizeFilenames) ||
-        getSafeConfig(conf, "logging.anonymize.filenames", anonymizeUsernames))
+    if (ConfigUtil::getRawConfig(conf, "logging.anonymize.usernames", anonymizeFilenames) ||
+        ConfigUtil::getRawConfig(conf, "logging.anonymize.filenames", anonymizeUsernames))
     {
         LOG_WRN("NOTE: both logging.anonymize.usernames and logging.anonymize.filenames are deprecated and superseded by "
                 "logging.anonymize.anonymize_user_data. Please remove username and filename entries from the config and use only anonymize_user_data.");
@@ -2427,7 +1435,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
     if (AnonymizeUserData && LogLevel == "trace" && !CleanupOnly)
     {
-        if (getConfigValue<bool>(conf, "logging.anonymize.allow_logging_user_data", false))
+        if (ConfigUtil::getConfigValue<bool>(conf, "logging.anonymize.allow_logging_user_data",
+                                             false))
         {
             LOG_WRN("Enabling trace logging while anonymization is enabled due to logging.anonymize.allow_logging_user_data setting. "
                     "This will leak user-data!");
@@ -2454,20 +1463,22 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     if (AnonymizeUserData)
     {
         // Get the salt, if set, otherwise default, and set as envar, so the kits inherit it.
-        anonymizationSalt = getConfigValue<std::uint64_t>(conf, "logging.anonymize.anonymization_salt", 82589933);
+        anonymizationSalt = ConfigUtil::getConfigValue<std::uint64_t>(
+            conf, "logging.anonymize.anonymization_salt", 82589933);
         const std::string anonymizationSaltStr = std::to_string(anonymizationSalt);
         setenv("COOL_ANONYMIZATION_SALT", anonymizationSaltStr.c_str(), true);
     }
-    FileUtil::setUrlAnonymization(AnonymizeUserData, anonymizationSalt);
+
+    Anonymizer::initialize(AnonymizeUserData, anonymizationSalt);
 
     {
         bool enableWebsocketURP =
-            COOLWSD::getConfigValue<bool>("security.enable_websocket_urp", false);
+            ConfigUtil::getConfigValue<bool>("security.enable_websocket_urp", false);
         setenv("ENABLE_WEBSOCKET_URP", enableWebsocketURP ? "true" : "false", 1);
     }
 
     {
-        std::string proto = getConfigValue<std::string>(conf, "net.proto", "");
+        std::string proto = ConfigUtil::getConfigValue<std::string>(conf, "net.proto", "");
         if (Util::iequal(proto, "ipv4"))
             ClientPortProto = Socket::Type::IPv4;
         else if (Util::iequal(proto, "ipv6"))
@@ -2479,7 +1490,7 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     }
 
     {
-        std::string listen = getConfigValue<std::string>(conf, "net.listen", "");
+        std::string listen = ConfigUtil::getConfigValue<std::string>(conf, "net.listen", "");
         if (Util::iequal(listen, "any"))
             ClientListenAddr = ServerSocket::Type::Public;
         else if (Util::iequal(listen, "loopback"))
@@ -2489,19 +1500,15 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     }
 
     // Prefix for the coolwsd pages; should not end with a '/'
-    ServiceRoot = getPathFromConfig("net.service_root");
+    ServiceRoot = ConfigUtil::getPathFromConfig("net.service_root");
     while (ServiceRoot.length() > 0 && ServiceRoot[ServiceRoot.length() - 1] == '/')
         ServiceRoot.pop_back();
 
-    IsProxyPrefixEnabled = getConfigValue<bool>(conf, "net.proxy_prefix", false);
+    IsProxyPrefixEnabled = ConfigUtil::getConfigValue<bool>(conf, "net.proxy_prefix", false);
 
-#if ENABLE_SSL
-    COOLWSD::SSLEnabled.set(getConfigValue<bool>(conf, "ssl.enable", true));
-    COOLWSD::SSLTermination.set(getConfigValue<bool>(conf, "ssl.termination", false));
-#endif
-
-    LOG_INF("SSL support: SSL is " << (COOLWSD::isSSLEnabled() ? "enabled." : "disabled."));
-    LOG_INF("SSL support: termination is " << (COOLWSD::isSSLTermination() ? "enabled." : "disabled."));
+    LOG_INF("SSL support: SSL is " << (ConfigUtil::isSslEnabled() ? "enabled." : "disabled."));
+    LOG_INF("SSL support: termination is "
+            << (ConfigUtil::isSSLTermination() ? "enabled." : "disabled."));
 
     std::string allowedLanguages(config().getString("allowed_languages"));
     // Core <= 7.0.
@@ -2511,7 +1518,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
 #endif
 
-    int pdfResolution = getConfigValue<int>(conf, "per_document.pdf_resolution_dpi", 96);
+    int pdfResolution =
+        ConfigUtil::getConfigValue<int>(conf, "per_document.pdf_resolution_dpi", 96);
     if (pdfResolution > 0)
     {
         constexpr int MaxPdfResolutionDpi = 384;
@@ -2531,14 +1539,14 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
         ::setenv("PDFIMPORT_RESOLUTION_DPI", pdfResolutionStr.c_str(), 1);
     }
 
-    SysTemplate = getPathFromConfig("sys_template_path");
+    SysTemplate = ConfigUtil::getPathFromConfig("sys_template_path");
     if (SysTemplate.empty())
     {
         LOG_FTL("Missing sys_template_path config entry.");
         throw Poco::Util::MissingOptionException("systemplate");
     }
 
-    ChildRoot = getPathFromConfig("child_root_path");
+    ChildRoot = ConfigUtil::getPathFromConfig("child_root_path");
     if (ChildRoot.empty())
     {
         LOG_FTL("Missing child_root_path config entry.");
@@ -2587,8 +1595,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     }
 
     // Fixup some config entries to match out decisions/overrides.
-    KitXmlConfig->setBool("ssl.enable", isSSLEnabled());
-    KitXmlConfig->setBool("ssl.termination", isSSLTermination());
+    KitXmlConfig->setBool("ssl.enable", ConfigUtil::isSslEnabled());
+    KitXmlConfig->setBool("ssl.termination", ConfigUtil::isSSLTermination());
 
     // We don't pass the config via command-line
     // to avoid dealing with escaping and other traps.
@@ -2596,16 +1604,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     KitXmlConfig->save(oss);
     setenv("COOL_CONFIG", oss.str().c_str(), true);
 
-    // Initialize the config subsystem too.
-    config::initialize(&config());
-
     Util::sleepFromEnvIfSet("Coolwsd", "SLEEPFORDEBUGGER");
 
     // For some reason I can't get at this setting in ChildSession::loKitCallback().
-    std::string fontsMissingHandling = config::getString("fonts_missing.handling", "log");
+    std::string fontsMissingHandling = ConfigUtil::getString("fonts_missing.handling", "log");
     setenv("FONTS_MISSING_HANDLING", fontsMissingHandling.c_str(), 1);
 
-    IsBindMountingEnabled = getConfigValue<bool>(conf, "mount_jail_tree", true);
+    IsBindMountingEnabled = ConfigUtil::getConfigValue<bool>(conf, "mount_jail_tree", true);
 #if CODE_COVERAGE
     // Code coverage is not supported with bind-mounting.
     if (IsBindMountingEnabled)
@@ -2618,8 +1623,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     // Setup the jails.
     bool UseMountNamespaces = true;
 
-    NoCapsForKit =
-        Util::isKitInProcess() || !getConfigValue<bool>(conf, "security.capabilities", true);
+    NoCapsForKit = Util::isKitInProcess() ||
+                   !ConfigUtil::getConfigValue<bool>(conf, "security.capabilities", true);
     if (NoCapsForKit && UseMountNamespaces)
     {
         // With NoCapsForKit we don't chroot. If Linux namespaces are available, we could
@@ -2633,13 +1638,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     setupChildRoot(UseMountNamespaces);
 
     LOG_DBG("FileServerRoot before config: " << FileServerRoot);
-    FileServerRoot = getPathFromConfig("file_server_root_path");
+    FileServerRoot = ConfigUtil::getPathFromConfig("file_server_root_path");
     LOG_DBG("FileServerRoot after config: " << FileServerRoot);
 
     //creating quarantine directory
-    if (getConfigValue<bool>(conf, "quarantine_files[@enable]", false))
+    if (ConfigUtil::getConfigValue<bool>(conf, "quarantine_files[@enable]", false))
     {
-        std::string path = Util::trimmed(getPathFromConfig("quarantine_files.path"));
+        std::string path = Util::trimmed(ConfigUtil::getPathFromConfig("quarantine_files.path"));
         LOG_INF("Quarantine path is set to [" << path << "] in config");
         if (path.empty())
         {
@@ -2681,7 +1686,7 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
         LOG_INF("Quarantine is disabled in config");
     }
 
-    NumPreSpawnedChildren = getConfigValue<int>(conf, "num_prespawn_children", 1);
+    NumPreSpawnedChildren = ConfigUtil::getConfigValue<int>(conf, "num_prespawn_children", 1);
     if (NumPreSpawnedChildren < 1)
     {
         LOG_WRN("Invalid num_prespawn_children in config (" << NumPreSpawnedChildren << "). Resetting to 1.");
@@ -2691,8 +1696,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
     FileUtil::registerFileSystemForDiskSpaceChecks(ChildRoot);
 
-    int nThreads = std::max<int>(std::thread::hardware_concurrency(), 1);
-    int maxConcurrency = getConfigValue<int>(conf, "per_document.max_concurrency", 4);
+    int threads = std::max<int>(std::thread::hardware_concurrency(), 1);
+    int maxConcurrency = ConfigUtil::getConfigValue<int>(conf, "per_document.max_concurrency", 4);
 
     if (maxConcurrency > 16)
     {
@@ -2700,12 +1705,12 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
                 "the scheduler, and consumes memory, while providing marginal gains "
                 "consider lowering max_concurrency from " << maxConcurrency);
     }
-    if (maxConcurrency > nThreads)
+    if (maxConcurrency > threads)
     {
         LOG_ERR("Setting concurrency above the number of physical "
                 "threads yields extra latency and memory usage for no benefit. "
-                "Clamping " << maxConcurrency << " to " << nThreads << " threads.");
-        maxConcurrency = nThreads;
+                "Clamping " << maxConcurrency << " to " << threads << " threads.");
+        maxConcurrency = threads;
     }
     if (maxConcurrency > 0)
     {
@@ -2715,7 +1720,7 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
     // It is worth avoiding configuring with a large number of under-weight
     // containers / VMs - better to have fewer, stronger ones.
-    if (nThreads < 4)
+    if (threads < 4)
     {
         LOG_WRN("Fewer threads than recommended. Having at least four threads for "
                 "provides significant parallelism that can be used for burst "
@@ -2728,7 +1733,8 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     setenv("VCL_NO_THREAD_SCALE", "1", 1);
 #endif
 
-    const auto redlining = getConfigValue<bool>(conf, "per_document.redlining_as_comments", false);
+    const auto redlining =
+        ConfigUtil::getConfigValue<bool>(conf, "per_document.redlining_as_comments", false);
     if (!redlining)
     {
         setenv("DISABLE_REDLINE", "1", 1);
@@ -2747,38 +1753,39 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 
     // Log the connection and document limits.
 #if ENABLE_WELCOME_MESSAGE
-    if (getConfigValue<bool>(conf, "home_mode.enable", false))
+    if (ConfigUtil::getConfigValue<bool>(conf, "home_mode.enable", false))
     {
         COOLWSD::MaxConnections = 20;
-        net::Defaults::get().MaxConnections = COOLWSD::MaxConnections; // re-align
         COOLWSD::MaxDocuments = 10;
     }
     else
     {
-        conf.setString("feedback.show", "true");
         conf.setString("welcome.enable", "true");
-        COOLWSD::MaxConnections = net::Defaults::get().MaxConnections; // aligned w/ MAX_CONNECTIONS above
+        COOLWSD::MaxConnections = MAX_CONNECTIONS;
         COOLWSD::MaxDocuments = MAX_DOCUMENTS;
     }
 #else
     {
-        COOLWSD::MaxConnections = net::Defaults::get().MaxConnections; // aligned w/ MAX_CONNECTIONS above
+        COOLWSD::MaxConnections = MAX_CONNECTIONS;
         COOLWSD::MaxDocuments = MAX_DOCUMENTS;
     }
 #endif
     {
-        net::Defaults& netDefaults = net::Defaults::get();
-        LOG_DBG("net::Defaults: WSPing[Timeout "
-                << netDefaults.WSPingTimeout << ", Period " << netDefaults.WSPingPeriod << "], HTTP[Timeout "
-                << netDefaults.HTTPTimeout << "], Socket[MaxConnections " << netDefaults.MaxConnections
-                << "], SocketPoll[Timeout " << netDefaults.SocketPollTimeout << "]");
+        LOG_DBG("net::Defaults: Socket[inactivityTimeout " << net::Defaults.inactivityTimeout
+                << ", maxExtConnections " << net::Defaults.maxExtConnections << "]");
     }
 
 #if !MOBILEAPP
-    NoSeccomp = Util::isKitInProcess() || !getConfigValue<bool>(conf, "security.seccomp", true);
-    AdminEnabled = getConfigValue<bool>(conf, "admin_console.enable", true);
-    IndirectionServerEnabled = !getConfigValue<std::string>(conf, "indirection_endpoint.url", "").empty();
-    GeolocationSetup = getConfigValue("indirection_endpoint.geolocation_setup.enable", false);
+    NoSeccomp =
+        Util::isKitInProcess() || !ConfigUtil::getConfigValue<bool>(conf, "security.seccomp", true);
+    NoCapsForKit = Util::isKitInProcess() ||
+                   !ConfigUtil::getConfigValue<bool>(conf, "security.capabilities", true);
+    AdminEnabled = ConfigUtil::getConfigValue<bool>(conf, "admin_console.enable", true);
+    IndirectionServerEnabled =
+        !ConfigUtil::getConfigValue<std::string>(conf, "indirection_endpoint.url", "").empty();
+    GeolocationSetup =
+        ConfigUtil::getConfigValue("indirection_endpoint.geolocation_setup.enable", false);
+
 #if ENABLE_DEBUG
     if (Util::isKitInProcess())
         SingleKit = true;
@@ -2786,27 +1793,32 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 #endif
 
     // LanguageTool configuration
-    bool enableLanguageTool = getConfigValue<bool>(conf, "languagetool.enabled", false);
+    bool enableLanguageTool = ConfigUtil::getConfigValue<bool>(conf, "languagetool.enabled", false);
     setenv("LANGUAGETOOL_ENABLED", enableLanguageTool ? "true" : "false", 1);
-    const std::string baseAPIUrl = getConfigValue<std::string>(conf, "languagetool.base_url", "");
+    const std::string baseAPIUrl =
+        ConfigUtil::getConfigValue<std::string>(conf, "languagetool.base_url", "");
     setenv("LANGUAGETOOL_BASEURL", baseAPIUrl.c_str(), 1);
-    const std::string userName = getConfigValue<std::string>(conf, "languagetool.user_name", "");
+    const std::string userName =
+        ConfigUtil::getConfigValue<std::string>(conf, "languagetool.user_name", "");
     setenv("LANGUAGETOOL_USERNAME", userName.c_str(), 1);
-    const std::string apiKey = getConfigValue<std::string>(conf, "languagetool.api_key", "");
+    const std::string apiKey =
+        ConfigUtil::getConfigValue<std::string>(conf, "languagetool.api_key", "");
     setenv("LANGUAGETOOL_APIKEY", apiKey.c_str(), 1);
-    bool sslVerification = getConfigValue<bool>(conf, "languagetool.ssl_verification", true);
+    bool sslVerification =
+        ConfigUtil::getConfigValue<bool>(conf, "languagetool.ssl_verification", true);
     setenv("LANGUAGETOOL_SSL_VERIFICATION", sslVerification ? "true" : "false", 1);
-    const std::string restProtocol = getConfigValue<std::string>(conf, "languagetool.rest_protocol", "");
+    const std::string restProtocol =
+        ConfigUtil::getConfigValue<std::string>(conf, "languagetool.rest_protocol", "");
     setenv("LANGUAGETOOL_RESTPROTOCOL", restProtocol.c_str(), 1);
 
     // DeepL configuration
-    const std::string apiURL = getConfigValue<std::string>(conf, "deepl.api_url", "");
-    const std::string authKey = getConfigValue<std::string>(conf, "deepl.auth_key", "");
+    const std::string apiURL = ConfigUtil::getConfigValue<std::string>(conf, "deepl.api_url", "");
+    const std::string authKey = ConfigUtil::getConfigValue<std::string>(conf, "deepl.auth_key", "");
     setenv("DEEPL_API_URL", apiURL.c_str(), 1);
     setenv("DEEPL_AUTH_KEY", authKey.c_str(), 1);
 
 #if !MOBILEAPP
-    const std::string helpUrl = getConfigValue<std::string>(conf, "help_url", HELP_URL);
+    const std::string helpUrl = ConfigUtil::getConfigValue<std::string>(conf, "help_url", HELP_URL);
     setenv("LOK_HELP_URL", helpUrl.c_str(), 1);
 #else
     // On mobile UI there should be no tunnelled dialogs. But if there are some, by mistake,
@@ -2814,9 +1826,10 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     setenv("LOK_HELP_URL", "", 1);
 #endif
 
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
     {
-        const std::string supportKeyString = getConfigValue<std::string>(conf, "support_key", "");
+        const std::string supportKeyString =
+            ConfigUtil::getConfigValue<std::string>(conf, "support_key", "");
 
         if (supportKeyString.empty())
         {
@@ -2881,10 +1894,11 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     COOLWSD::NumConnections = 0;
 
     // Command Tracing.
-    if (getConfigValue<bool>(conf, "trace[@enable]", false))
+    if (ConfigUtil::getConfigValue<bool>(conf, "trace[@enable]", false))
     {
-        const auto& path = getConfigValue<std::string>(conf, "trace.path", "");
-        const auto recordOutgoing = getConfigValue<bool>(conf, "trace.outgoing.record", false);
+        const auto& path = ConfigUtil::getConfigValue<std::string>(conf, "trace.path", "");
+        const auto recordOutgoing =
+            ConfigUtil::getConfigValue<bool>(conf, "trace.outgoing.record", false);
         std::vector<std::string> filters;
         for (size_t i = 0; ; ++i)
         {
@@ -2900,8 +1914,10 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
             }
         }
 
-        const auto compress = getConfigValue<bool>(conf, "trace.path[@compress]", false);
-        const auto takeSnapshot = getConfigValue<bool>(conf, "trace.path[@snapshot]", false);
+        const auto compress =
+            ConfigUtil::getConfigValue<bool>(conf, "trace.path[@compress]", false);
+        const auto takeSnapshot =
+            ConfigUtil::getConfigValue<bool>(conf, "trace.path[@snapshot]", false);
         TraceDumper = std::make_unique<TraceFileWriter>(path, recordOutgoing, compress,
                                                         takeSnapshot, filters);
     }
@@ -2944,7 +1960,6 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 #endif
 
     WebServerPoll = std::make_unique<TerminatingPoll>("websrv_poll");
-    WebServerPoll->setLimiter( net::Defaults::get().MaxConnections );
 
 #if !MOBILEAPP
     net::AsyncDNS::startAsyncDNS();
@@ -2982,19 +1997,30 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     ServerApplication::initialize(self);
 
     DocProcSettings docProcSettings;
-    docProcSettings.setLimitVirtMemMb(getConfigValue<int>("per_document.limit_virt_mem_mb", 0));
-    docProcSettings.setLimitStackMemKb(getConfigValue<int>("per_document.limit_stack_mem_kb", 0));
-    docProcSettings.setLimitFileSizeMb(getConfigValue<int>("per_document.limit_file_size_mb", 0));
-    docProcSettings.setLimitNumberOpenFiles(getConfigValue<int>("per_document.limit_num_open_files", 0));
+    docProcSettings.setLimitVirtMemMb(
+        ConfigUtil::getConfigValue<int>("per_document.limit_virt_mem_mb", 0));
+    docProcSettings.setLimitStackMemKb(
+        ConfigUtil::getConfigValue<int>("per_document.limit_stack_mem_kb", 0));
+    docProcSettings.setLimitFileSizeMb(
+        ConfigUtil::getConfigValue<int>("per_document.limit_file_size_mb", 0));
+    docProcSettings.setLimitNumberOpenFiles(
+        ConfigUtil::getConfigValue<int>("per_document.limit_num_open_files", 0));
 
     DocCleanupSettings &docCleanupSettings = docProcSettings.getCleanupSettings();
-    docCleanupSettings.setEnable(getConfigValue<bool>("per_document.cleanup[@enable]", true));
-    docCleanupSettings.setCleanupInterval(getConfigValue<int>("per_document.cleanup.cleanup_interval_ms", 10000));
-    docCleanupSettings.setBadBehaviorPeriod(getConfigValue<int>("per_document.cleanup.bad_behavior_period_secs", 60));
-    docCleanupSettings.setIdleTime(getConfigValue<int>("per_document.cleanup.idle_time_secs", 300));
-    docCleanupSettings.setLimitDirtyMem(getConfigValue<int>("per_document.cleanup.limit_dirty_mem_mb", 3072));
-    docCleanupSettings.setLimitCpu(getConfigValue<int>("per_document.cleanup.limit_cpu_per", 85));
-    docCleanupSettings.setLostKitGracePeriod(getConfigValue<int>("per_document.cleanup.lost_kit_grace_period_secs", 120));
+    docCleanupSettings.setEnable(
+        ConfigUtil::getConfigValue<bool>("per_document.cleanup[@enable]", true));
+    docCleanupSettings.setCleanupInterval(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.cleanup_interval_ms", 10000));
+    docCleanupSettings.setBadBehaviorPeriod(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.bad_behavior_period_secs", 60));
+    docCleanupSettings.setIdleTime(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.idle_time_secs", 300));
+    docCleanupSettings.setLimitDirtyMem(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.limit_dirty_mem_mb", 3072));
+    docCleanupSettings.setLimitCpu(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.limit_cpu_per", 85));
+    docCleanupSettings.setLostKitGracePeriod(
+        ConfigUtil::getConfigValue<int>("per_document.cleanup.lost_kit_grace_period_secs", 120));
 
     Admin::instance().setDefDocProcSettings(docProcSettings, false);
 
@@ -3006,16 +2032,16 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 void COOLWSD::initializeSSL()
 {
 #if ENABLE_SSL
-    if (!COOLWSD::isSSLEnabled())
+    if (!ConfigUtil::isSslEnabled())
         return;
 
-    const std::string ssl_cert_file_path = getPathFromConfig("ssl.cert_file_path");
+    const std::string ssl_cert_file_path = ConfigUtil::getPathFromConfig("ssl.cert_file_path");
     LOG_INF("SSL Cert file: " << ssl_cert_file_path);
 
-    const std::string ssl_key_file_path = getPathFromConfig("ssl.key_file_path");
+    const std::string ssl_key_file_path = ConfigUtil::getPathFromConfig("ssl.key_file_path");
     LOG_INF("SSL Key file: " << ssl_key_file_path);
 
-    const std::string ssl_ca_file_path = getPathFromConfig("ssl.ca_file_path");
+    const std::string ssl_ca_file_path = ConfigUtil::getPathFromConfig("ssl.ca_file_path");
     LOG_INF("SSL CA file: " << ssl_ca_file_path);
 
     std::string ssl_cipher_list = config().getString("ssl.cipher_list", "");
@@ -3261,6 +2287,8 @@ void COOLWSD::handleOption(const std::string& optionName,
 #endif
 }
 
+#if !MOBILEAPP
+
 void COOLWSD::initializeEnvOptions()
 {
     int n = 0;
@@ -3270,6 +2298,7 @@ void COOLWSD::initializeEnvOptions()
         bool first = true;
         std::istringstream aliasGroupStream;
         aliasGroupStream.str(aliasGroup);
+        int j = 0;
         for (std::string alias; std::getline(aliasGroupStream, alias, ',');)
         {
             if (first)
@@ -3282,7 +2311,8 @@ void COOLWSD::initializeEnvOptions()
             else
             {
                 _overrideSettings["storage.wopi.alias_groups.group[" + std::to_string(n) +
-                                  "].alias"] = alias;
+                                  "].alias[" + std::to_string(j) + ']'] = alias;
+                j++;
             }
         }
 
@@ -3300,8 +2330,6 @@ void COOLWSD::initializeEnvOptions()
     if ((optionValue = std::getenv("dictionaries")) != nullptr) _overrideSettings["allowed_languages"] = optionValue;
     if ((optionValue = std::getenv("remoteconfigurl")) != nullptr) _overrideSettings["remote_config.remote_url"] = optionValue;
 }
-
-#if !MOBILEAPP
 
 void COOLWSD::displayHelp()
 {
@@ -4056,12 +3084,12 @@ public:
         std::string version, hash;
         Util::getVersionInfo(version, hash);
 
-        os << "COOLWSDServer: " << version << " - " << hash
+        os << "COOLWSDServer: " << version << " - " << hash << " state dumping"
 #if !MOBILEAPP
-           << "\n  Kit version: " << COOLWSD::LOKitVersion
-           << "\n  Ports: server " << ClientPortNumber << " prisoner " << MasterLocation
-           << "\n  SSL: " << (COOLWSD::isSSLEnabled() ? "https" : "http")
-           << "\n  SSL-Termination: " << (COOLWSD::isSSLTermination() ? "yes" : "no")
+           << "\n  Kit version: " << COOLWSD::LOKitVersion << "\n  Ports: server "
+           << ClientPortNumber << " prisoner " << MasterLocation
+           << "\n  SSL: " << (ConfigUtil::isSslEnabled() ? "https" : "http")
+           << "\n  SSL-Termination: " << (ConfigUtil::isSSLTermination() ? "yes" : "no")
            << "\n  Security " << (COOLWSD::NoCapsForKit ? "no" : "") << " chroot, "
            << (COOLWSD::NoSeccomp ? "no" : "") << " api lockdown"
            << "\n  Admin: " << (COOLWSD::AdminEnabled ? "enabled" : "disabled")
@@ -4069,7 +3097,7 @@ public:
 #endif
            << "\n  TerminationFlag: " << SigUtil::getTerminationFlag()
            << "\n  isShuttingDown: " << SigUtil::getShutdownRequestFlag()
-           << "\n  NewChildren: " << NewChildren.size()
+           << "\n  NewChildren: " << NewChildren.size() << " (" << NewChildren.capacity() << ')'
            << "\n  OutstandingForks: " << OutstandingForks
            << "\n  NumPreSpawnedChildren: " << COOLWSD::NumPreSpawnedChildren
            << "\n  ChildSpawnTimeoutMs: " << ChildSpawnTimeoutMs
@@ -4096,6 +3124,8 @@ public:
            << "\n  IsProxyPrefixEnabled: " << (COOLWSD::IsProxyPrefixEnabled ? "yes" : "no")
            << "\n  OverrideWatermark: " << COOLWSD::OverrideWatermark
            << "\n  UserInterface: " << COOLWSD::UserInterface
+           << "\n  Total PSS: " << Util::getProcessTreePss(getpid()) << " KB"
+           << "\n  Config: " << LoggableConfigEntries
             ;
 
         std::string smap;
@@ -4117,33 +3147,37 @@ public:
         os << "\nServer poll:\n";
         _acceptPoll.dumpState(os);
 
-        os << "Web Server poll:\n";
+        os << "\nWeb Server poll:\n";
         WebServerPoll->dumpState(os);
 
-        os << "Prisoner poll:\n";
+        os << "\nPrisoner poll:\n";
         PrisonerPoll->dumpState(os);
 
 #if !MOBILEAPP
-        os << "Admin poll:\n";
+        os << "\nAdmin poll:\n";
         _admin.dumpState(os);
 
         // If we have any delaying work going on.
+        os << '\n';
         Delay::dumpState(os);
 
         // If we have any DNS work going on.
+        os << '\n';
         net::AsyncDNS::dumpState(os);
 
+        os << '\n';
         COOLWSD::SavedClipboards->dumpState(os);
 #endif
 
-        os << "Document Broker polls "
-                  << "[ " << DocBrokers.size() << " ]:\n";
+        os << "\nDocument Broker polls " << "[ " << DocBrokers.size() << " ]:\n";
         for (auto &i : DocBrokers)
             i.second->dumpState(os);
 
 #if !MOBILEAPP
-        os << "Converter count: " << ConvertToBroker::getInstanceCount() << '\n';
+        os << "\nConverter count: " << ConvertToBroker::getInstanceCount() << '\n';
 #endif
+
+        os << "\nDone COOLWSDServer state dumping.\n";
 
         Socket::InhibitThreadChecks = false;
         SocketPoll::InhibitThreadChecks = false;
@@ -4224,7 +3258,7 @@ private:
         }
 
 #if ENABLE_SSL
-        if (COOLWSD::isSSLEnabled())
+        if (ConfigUtil::isSslEnabled())
             factory = std::make_shared<SslSocketFactory>();
         else
 #endif
@@ -4279,7 +3313,7 @@ void COOLWSD::processFetchUpdate(SocketPoll& poll)
             return;
 
         Poco::URI uriFetch(url);
-        uriFetch.addQueryParameter("product", config::getString("product_name", APP_NAME));
+        uriFetch.addQueryParameter("product", ConfigUtil::getString("product_name", APP_NAME));
         uriFetch.addQueryParameter("version", Util::getCoolVersion());
         LOG_TRC("Infobar update request from " << uriFetch.toString());
         FetchHttpSession = StorageConnectionManager::getHttpSession(uriFetch);
@@ -4393,7 +3427,7 @@ int COOLWSD::innerMain()
     Delay delay(SimulatedLatencyMs);
 
     const auto fetchUpdateCheck = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::hours(std::max(getConfigValue<int>("fetch_update_check", 10), 0)));
+        std::chrono::hours(std::max(ConfigUtil::getConfigValue<int>("fetch_update_check", 10), 0)));
 #endif
 
     ClientRequestDispatcher::InitStaticFileContentCache();
@@ -4402,7 +3436,8 @@ int COOLWSD::innerMain()
     assert(Server && "The COOLWSDServer instance does not exist.");
     Server->findClientPort();
 
-    TmpFontDir = ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH;
+    TmpFontDir = ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH + "/fonts";
+    TmpPresntTemplateDir = ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH + "/templates/presnt";
 
     // Start the internal prisoner server and spawn forkit,
     // which in turn forks first child.
@@ -4462,22 +3497,49 @@ int COOLWSD::innerMain()
         LOG_ERR("Log level is set very high to '" << LogLevel << "' this will have a "
                 "significant performance impact. Do not use this in production.");
 
-    // Start the remote font downloading polling thread.
-    std::unique_ptr<RemoteFontConfigPoll> remoteFontConfigThread;
-    try
+    std::string uriConfigKey;
+    const std::string& fontConfigKey = "remote_font_config.url";
+    const std::string& assetConfigKey = "remote_asset_config.url";
+    bool remoteFontDefined = !ConfigUtil::getConfigValue<std::string>(fontConfigKey, "").empty();
+    bool remoteAssetDefined = !ConfigUtil::getConfigValue<std::string>(assetConfigKey, "").empty();
+    // Both defined: warn and use assetConfigKey
+    if (remoteFontDefined && remoteAssetDefined)
     {
-        // Fetch font settings from server if configured
-        remoteFontConfigThread = std::make_unique<RemoteFontConfigPoll>(config());
-        remoteFontConfigThread->start();
+        LOG_WRN("Both remote_font_config.url and remote_asset_config.url are defined, "
+                "remote_asset_config.url is overriden on remote_font_config.url");
+        uriConfigKey = assetConfigKey;
     }
-    catch (const Poco::Exception&)
+    // only font defined: use fontConfigKey
+    else if (remoteFontDefined && !remoteAssetDefined)
     {
-        LOG_DBG("No remote_font_config");
+        uriConfigKey = fontConfigKey;
     }
+    // only asset defined: use assetConfigKey
+    else if (!remoteFontDefined && remoteAssetDefined)
+    {
+        uriConfigKey = assetConfigKey;
+    }
+
+    // Start the remote asset downloading polling thread.
+    std::unique_ptr<RemoteAssetConfigPoll> remoteAssetConfigThread;
+    if (!uriConfigKey.empty())
+    {
+        try
+        {
+            // Fetch font and/or templates settings from server if configured
+            remoteAssetConfigThread = std::make_unique<RemoteAssetConfigPoll>(config(), uriConfigKey);
+            remoteAssetConfigThread->start();
+        }
+        catch (const Poco::Exception&)
+        {
+            LOG_DBG("No remote_asset_config");
+        }
+    }
+
 #endif
 
     // URI with /contents are public and we don't need to anonymize them.
-    Util::mapAnonymized("contents", "contents");
+    Anonymizer::mapAnonymized("contents", "contents");
 
     // Start the server.
     Server->start();
@@ -4542,7 +3604,8 @@ int COOLWSD::innerMain()
     auto stampFetch = startStamp - (fetchUpdateCheck - std::chrono::milliseconds(60000));
 
 #ifdef __linux__
-    if (getConfigValue<bool>("stop_on_config_change", false)) {
+    if (ConfigUtil::getConfigValue<bool>("stop_on_config_change", false))
+    {
         std::shared_ptr<InotifySocket> inotifySocket = std::make_shared<InotifySocket>(startStamp);
         mainWait.insertNewSocket(inotifySocket);
     }
@@ -4550,12 +3613,11 @@ int COOLWSD::innerMain()
 #endif
 
     SigUtil::addActivity("coolwsd running");
-    const std::chrono::microseconds PollTimeoutMicroS = net::Defaults::get().SocketPollTimeout;
 
     while (!SigUtil::getShutdownRequestFlag())
     {
         // This timeout affects the recovery time of prespawned children.
-        std::chrono::microseconds waitMicroS = PollTimeoutMicroS * 4;
+        std::chrono::microseconds waitMicroS = SocketPoll::DefaultPollTimeoutMicroS * 4;
 
         if (UnitWSD::isUnitTesting() && !SigUtil::getShutdownRequestFlag())
         {
@@ -4602,6 +3664,9 @@ int COOLWSD::innerMain()
         }
 #endif
     }
+
+#ifndef IOS // SigUtil::getShutdownRequestFlag() always returns false on iOS, thus the above while
+            // loop never exits.
 
     COOLWSD::alertAllUsersInternal("close: shuttingdown");
 
@@ -4775,6 +3840,7 @@ int COOLWSD::innerMain()
     Util::forcedExit(returnValue);
 
     return returnValue;
+#endif
 }
 
 std::shared_ptr<TerminatingPoll> COOLWSD:: getWebServerPoll ()
@@ -4800,7 +3866,7 @@ void COOLWSD::cleanup()
 
 #if ENABLE_SSL
         // Finally, we no longer need SSL.
-        if (COOLWSD::isSSLEnabled())
+        if (ConfigUtil::isSslEnabled())
         {
             Poco::Net::uninitializeSSL();
             Poco::Crypto::uninitializeCrypto();
@@ -4947,6 +4013,8 @@ void alertAllUsers(const std::string& msg)
 
 #endif
 
+void forwardSignal(const int signum);
+
 void dump_state()
 {
     std::ostringstream oss;
@@ -4954,13 +4022,20 @@ void dump_state()
     if (Server)
         Server->dumpState(oss);
 
+    oss << "\nMalloc info: \n" << Util::getMallocInfo() << '\n';
+
     const std::string msg = oss.str();
     fprintf(stderr, "%s\n", msg.c_str());
+
     LOG_TRC(msg);
 
 #if !MOBILEAPP
     Admin::dumpMetrics();
 #endif
+
+    std::lock_guard<std::mutex> docBrokerLock(DocBrokersMutex);
+    std::lock_guard<std::mutex> newChildLock(NewChildrenMutex);
+    forwardSignal(SIGUSR1);
 }
 
 void lslr_childroot()
@@ -4980,11 +4055,21 @@ void forwardSigUsr2()
     Util::assertIsLocked(DocBrokersMutex);
     std::lock_guard<std::mutex> newChildLock(NewChildrenMutex);
 
+    forwardSignal(SIGUSR2);
+}
+
+void forwardSignal(const int signum)
+{
+    const char* name = SigUtil::signalName(signum);
+
+    Util::assertIsLocked(DocBrokersMutex);
+    Util::assertIsLocked(NewChildrenMutex);
+
 #if !MOBILEAPP
     if (COOLWSD::ForKitProcId > 0)
     {
-        LOG_INF("Sending SIGUSR2 to forkit " << COOLWSD::ForKitProcId);
-        ::kill(COOLWSD::ForKitProcId, SIGUSR2);
+        LOG_INF("Sending " << name << " to forkit " << COOLWSD::ForKitProcId);
+        ::kill(COOLWSD::ForKitProcId, signum);
     }
 #endif
 
@@ -4992,18 +4077,18 @@ void forwardSigUsr2()
     {
         if (child && child->getPid() > 0)
         {
-            LOG_INF("Sending SIGUSR2 to child " << child->getPid());
-            ::kill(child->getPid(), SIGUSR2);
+            LOG_INF("Sending " << name << " to child " << child->getPid());
+            ::kill(child->getPid(), signum);
         }
     }
 
     for (const auto& pair : DocBrokers)
     {
         std::shared_ptr<DocumentBroker> docBroker = pair.second;
-        if (docBroker)
+        if (docBroker && docBroker->getPid() > 0)
         {
-            LOG_INF("Sending SIGUSR2 to docBroker " << docBroker->getPid());
-            ::kill(docBroker->getPid(), SIGUSR2);
+            LOG_INF("Sending " << name << " to docBroker " << docBroker->getPid());
+            ::kill(docBroker->getPid(), signum);
         }
     }
 }

@@ -52,6 +52,7 @@ public:
         const std::string& getUsername() const { return _username; }
         const std::string& getUserExtraInfo() const { return _userExtraInfo; }
         const std::string& getUserPrivateInfo() const { return _userPrivateInfo; }
+        const std::string& getServerPrivateInfo() const { return _serverPrivateInfo; }
         const std::string& getWatermarkText() const { return _watermarkText; }
         const std::string& getTemplateSaveAs() const { return _templateSaveAs; }
         const std::string& getTemplateSource() const { return _templateSource; }
@@ -76,6 +77,7 @@ public:
         bool getDownloadAsPostMessage() const { return _downloadAsPostMessage; }
         bool getUserCanNotWriteRelative() const { return _userCanNotWriteRelative; }
         bool getEnableInsertRemoteImage() const { return _enableInsertRemoteImage; }
+        bool getEnableInsertRemoteFile() const { return _enableInsertRemoteFile; }
         bool getDisableInsertLocalImage() const { return _disableInsertLocalImage; }
         bool getEnableRemoteLinkPicker() const { return _enableRemoteLinkPicker; }
         bool getEnableShare() const { return _enableShare; }
@@ -101,6 +103,8 @@ public:
         std::string _userExtraInfo;
         /// Private info per user, for API keys and other non-public information.
         std::string _userPrivateInfo;
+        /// Private info per server, for API keys and other non-public information.
+        std::string _serverPrivateInfo;
         /// In case a watermark has to be rendered on each tile.
         std::string _watermarkText;
         /// In case we want to use this file as a template, it should be first re-saved under this name (using PutRelativeFile).
@@ -151,6 +155,8 @@ public:
         bool _userCanNotWriteRelative = true;
         /// If set to true, users can access the insert remote image functionality
         bool _enableInsertRemoteImage = false;
+        /// If set to true, users can access the insert remote multimedia functionality
+        bool _enableInsertRemoteFile = false;
         /// If set to true, users can't insert an image from the local machine
         bool _disableInsertLocalImage = false;
         /// If set to true, users can access the remote link picker functionality
@@ -175,7 +181,7 @@ public:
         : StorageBase(uri, localStorePath, jailPath)
         , _wopiSaveDuration(std::chrono::milliseconds::zero())
         , _utf7Converter("UTF-8", "UTF-7")
-        , _legacyServer(COOLWSD::getConfigValue<bool>("storage.wopi.is_legacy_server", false))
+        , _legacyServer(ConfigUtil::getConfigValue<bool>("storage.wopi.is_legacy_server", false))
     {
         LOG_INF("WopiStorage ctor with localStorePath: ["
                 << localStorePath << "], jailPath: [" << jailPath << "], uri: ["

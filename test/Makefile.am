@@ -1,5 +1,3 @@
-if ENABLE_TESTS
-
 # Cap threadpools to 4 threads.
 export MAX_CONCURRENCY=4
 AUTOMAKE_OPTION = serial-tests
@@ -21,7 +19,9 @@ AM_CXXFLAGS = $(CPPUNIT_CFLAGS) -DTDOC=\"$(abs_top_srcdir)/test/data\" -DTDIST=\
 	-I${top_srcdir} -I${top_srcdir}/test \
 	-pthread -DCOOLWSD_DATADIR='"@COOLWSD_DATADIR@"' \
 	-DCOOLWSD_CONFIGDIR='"@COOLWSD_CONFIGDIR@"' \
+	-DCOOLWSD_LOGLEVEL='"@COOLWSD_LOGLEVEL@"' \
 	-DDEBUG_ABSSRCDIR='"@abs_srcdir@"' \
+	-DNUM_PRESPAWN_CHILDREN='"@NUM_PRESPAWN_CHILDREN@"' \
 	${include_paths}
 
 # These are ordered by how long each takes to run.
@@ -79,6 +79,7 @@ all_la_unit_tests = \
 	unit-cursor.la \
 	unit-render-search-result.la \
 	unit-tiff-load.la \
+	unit-save.la \
 	unit-wopi-saveas-with-encoded-file-name.la \
 	unit-storage.la \
 	unit-wopi-async-upload-modifyclose.la \
@@ -91,9 +92,11 @@ all_la_unit_tests = \
 	unit-join-disconnect.la \
 	unit-initial-load-fail.la \
 	unit-timeout.la \
-	unit-timeout_wsping.la \
+	unit-timeout_inactive.la \
 	unit-timeout_conn.la \
 	unit-timeout_none.la \
+	unit-serversock_accept1.la \
+	unit-streamsock_ctor1.la \
 	unit-base.la
 #	unit-admin.la
 #	unit-tilecache.la # Empty test.
@@ -131,8 +134,8 @@ wsd_sources = \
 	../wsd/RequestDetails.cpp \
 	../wsd/TileCache.cpp
 
+#	KitQueueTests.cpp \
 test_base_sources = \
-	KitQueueTests.cpp \
 	RequestDetailsTests.cpp \
 	StringVectorTests.cpp \
 	FileServeWhiteBoxTests.cpp \
@@ -159,9 +162,10 @@ common_sources = \
 	../common/TraceEvent.cpp \
 	../common/Unit.cpp \
 	../common/Uri.cpp \
-	../common/Util-desktop.cpp \
+	../common/Util-server.cpp \
 	../common/Util.cpp \
 	../kit/KitQueue.cpp \
+	../kit/LogUI.cpp \
 	../wsd/Exceptions.cpp \
 	../net/HttpRequest.cpp \
 	../net/Socket.cpp \
@@ -191,7 +195,7 @@ unit_base_la_LIBADD += -lssl -lcrypto
 endif
 
 fakesockettest_CPPFLAGS = -g
-fakesockettest_SOURCES = fakesockettest.cpp  ../net/FakeSocket.cpp ../common/DummyTraceEventEmitter.cpp ../common/Log.cpp ../common/Util.cpp ../common/Util-desktop.cpp
+fakesockettest_SOURCES = fakesockettest.cpp  ../net/FakeSocket.cpp ../common/DummyTraceEventEmitter.cpp ../common/Log.cpp ../common/Util.cpp ../common/Util-server.cpp
 fakesockettest_LDADD = $(CPPUNIT_LIBS)
 
 # old-style unit tests - bootstrapped via UnitClient
@@ -211,8 +215,8 @@ unit_http_la_LIBADD = $(CPPUNIT_LIBS)
 if ENABLE_LIBFUZZER
 unit_fuzz_la_SOURCES = UnitFuzz.cpp
 endif
-unit_admin_la_SOURCES = UnitAdmin.cpp
-unit_admin_la_LIBADD = $(CPPUNIT_LIBS)
+#unit_admin_la_SOURCES = UnitAdmin.cpp
+#unit_admin_la_LIBADD = $(CPPUNIT_LIBS)
 unit_typing_la_SOURCES = UnitTyping.cpp
 unit_typing_la_LIBADD = $(CPPUNIT_LIBS)
 unit_copy_paste_la_SOURCES = UnitCopyPaste.cpp
@@ -226,12 +230,16 @@ unit_join_disconnect_la_SOURCES = UnitJoinDisconnect.cpp
 unit_join_disconnect_la_LIBADD = $(CPPUNIT_LIBS)
 unit_timeout_la_SOURCES = UnitTimeout.cpp
 unit_timeout_la_LIBADD = $(CPPUNIT_LIBS)
-unit_timeout_wsping_la_SOURCES = UnitTimeoutWSPing.cpp
-unit_timeout_wsping_la_LIBADD = $(CPPUNIT_LIBS)
+unit_timeout_inactive_la_SOURCES = UnitTimeoutInactive.cpp
+unit_timeout_inactive_la_LIBADD = $(CPPUNIT_LIBS)
 unit_timeout_conn_la_SOURCES = UnitTimeoutConnections.cpp
 unit_timeout_conn_la_LIBADD = $(CPPUNIT_LIBS)
 unit_timeout_none_la_SOURCES = UnitTimeoutNone.cpp
 unit_timeout_none_la_LIBADD = $(CPPUNIT_LIBS)
+unit_serversock_accept1_la_SOURCES = UnitServerSocketAcceptFailure1.cpp
+unit_serversock_accept1_la_LIBADD = $(CPPUNIT_LIBS)
+unit_streamsock_ctor1_la_SOURCES = UnitStreamSocketCtorFailure1.cpp
+unit_streamsock_ctor1_la_LIBADD = $(CPPUNIT_LIBS)
 unit_prefork_la_SOURCES = UnitPrefork.cpp
 unit_prefork_la_LIBADD = $(CPPUNIT_LIBS)
 unit_storage_la_SOURCES = UnitStorage.cpp
@@ -284,6 +292,8 @@ unit_wopi_httpredirect_la_SOURCES = UnitWOPIHttpRedirect.cpp
 unit_wopi_httpredirect_la_LIBADD = $(CPPUNIT_LIBS)
 unit_tiff_load_la_SOURCES = UnitTiffLoad.cpp
 unit_tiff_load_la_LIBADD = $(CPPUNIT_LIBS)
+unit_save_la_SOURCES = UnitSave.cpp
+unit_save_la_LIBADD = $(CPPUNIT_LIBS)
 unit_large_paste_la_SOURCES = UnitLargePaste.cpp
 unit_large_paste_la_LIBADD = $(CPPUNIT_LIBS)
 unit_paste_la_SOURCES = UnitPaste.cpp
@@ -293,7 +303,7 @@ unit_load_torture_la_LIBADD = $(CPPUNIT_LIBS)
 unit_save_torture_la_SOURCES = UnitSaveTorture.cpp
 unit_save_torture_la_LIBADD = $(CPPUNIT_LIBS)
 unit_synthetic_lok_la_SOURCES = UnitSyntheticLok.cpp
-unit_synthetic_lok__la_LIBADD = $(CPPUNIT_LIBS)
+unit_synthetic_lok_la_LIBADD = $(CPPUNIT_LIBS)
 unit_rendering_options_la_SOURCES = UnitRenderingOptions.cpp
 unit_rendering_options_la_LIBADD = $(CPPUNIT_LIBS)
 unit_password_protected_la_SOURCES = UnitPasswordProtected.cpp
@@ -372,4 +382,3 @@ all-local: unittest
 	@$(CLEANUP_COMMAND)
 
 .PRECIOUS: $(TEST_LOGS)
-endif

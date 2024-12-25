@@ -13,7 +13,7 @@
  * L.Control.NotebookbarWriter - definition of notebookbar content in Writer
  */
 
-/* global _ _UNO */
+/* global _ _UNO app */
 
 var fileTabName = 'File';
 var homeTabName = 'Home';
@@ -933,6 +933,13 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'command': '.uno:ParagraphDialog',
 				'accessibility': { focusBack: false, combination: 'B', de: null }
 			},
+			app.isExperimentalMode() ? {
+				'id': 'format-style-dialog',
+				'type': 'bigtoolitem',
+				'text': _('Style list'),
+				'command': '.uno:SidebarDeck.StyleListDeck',
+				'accessibility': { focusBack: false, combination: 'SD', de: null }
+			} : {},
 			{
 				'id': 'format-FormatBulletsMenu',
 				'type': 'menubutton',
@@ -2157,12 +2164,32 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'accessibility': { focusBack: false, combination: 'C', de: 'N' }
 			},
 			{
-				'id': 'review-show-resolved-annotations',
-				'class': 'unoshowresolvedannotations',
-				'type': 'bigcustomtoolitem',
-				'text': _UNO('.uno:ShowResolvedAnnotations', 'text'),
-				'command': '.uno:ShowResolvedAnnotations',
-				'accessibility': { focusBack: true, combination: 'SR', de: null }
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'showannotations',
+								'type': 'customtoolitem',
+								'text': _UNO('.uno:ShowAnnotations', 'text'),
+								'command': 'showannotations',
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'review-show-resolved-annotations',
+								'type': 'toolitem',
+								'text': _UNO('.uno:ShowResolvedAnnotations', 'text'),
+								'command': '.uno:ShowResolvedAnnotations',
+							}
+						]
+					}
+				],
+				'vertical': 'true'
 			},
 			{
 				'type': 'container',
@@ -2350,7 +2377,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 		var content = [
 			{
 				'type': 'bigtoolitem',
-				'text': _UNO('.uno:TableDialog', 'text'),
+				'text': _UNO('.uno:TableDialog', 'text', true),
 				'command': '.uno:TableDialog'
 			},
 			{
@@ -2361,12 +2388,12 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertColumnsBefore', 'text'),
+								'text': _UNO('.uno:InsertColumnsBefore', 'text', true),
 								'command': '.uno:InsertColumnsBefore'
 							},
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertColumnsAfter', 'text'),
+								'text': _UNO('.uno:InsertColumnsAfter', 'text', true),
 								'command': '.uno:InsertColumnsAfter'
 							},
 							{
@@ -2381,12 +2408,12 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertRowsBefore', 'text'),
+								'text': _UNO('.uno:InsertRowsBefore', 'text', true),
 								'command': '.uno:InsertRowsBefore'
 							},
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertRowsAfter', 'text'),
+								'text': _UNO('.uno:InsertRowsAfter', 'text', true),
 								'command': '.uno:InsertRowsAfter'
 							},
 							{

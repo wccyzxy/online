@@ -17,6 +17,7 @@
 #endif
 
 #include "Util.hpp"
+#include "Rectangle.hpp"
 #include "SigHandlerTrap.hpp"
 
 #include <poll.h>
@@ -43,6 +44,10 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <spawn.h>
+
+#if defined __GLIBC__
+#include <malloc.h>
+#endif
 
 #include <atomic>
 #include <cassert>
@@ -184,22 +189,6 @@ namespace Util
                      s.end());
             return s.substr(0, length);
         }
-    }
-
-    std::string encodeId(const std::uint64_t number, const int padding)
-    {
-        std::ostringstream oss;
-        oss << std::hex << std::setw(padding) << std::setfill('0') << number;
-        return oss.str();
-    }
-
-    std::uint64_t decodeId(const std::string& str)
-    {
-        std::uint64_t id = 0;
-        std::stringstream ss;
-        ss << std::hex << str;
-        ss >> id;
-        return id;
     }
 
     bool windowingAvailable()
@@ -368,12 +357,7 @@ namespace Util
 
     std::string getCoolVersion() { return std::string(COOLWSD_VERSION); }
 
-    std::string getCoolVersionHash()
-    {
-        std::string hash(COOLWSD_VERSION_HASH);
-        hash.resize(std::min(8, (int)hash.length()));
-        return hash;
-    }
+    std::string getCoolVersionHash() { return std::string(COOLWSD_VERSION_HASH); }
 
     void getVersionInfo(std::string& version, std::string& hash)
     {
@@ -422,40 +406,6 @@ namespace Util
         return json;
     }
 
-    std::string UniqueId()
-    {
-        static std::atomic_int counter(0);
-        return std::to_string(getpid()) + '/' + std::to_string(counter++);
-    }
-
-    bool isValidURIScheme(const std::string& scheme)
-    {
-        if (scheme.empty())
-            return false;
-
-        for (char c : scheme)
-        {
-            if (!isalpha(c))
-                return false;
-        }
-
-        return true;
-    }
-
-    bool isValidURIHost(const std::string& host)
-    {
-        if (host.empty())
-            return false;
-
-        for (char c : host)
-        {
-            if (!isalnum(c) && c != '_' && c != '-' && c != '.' && c !=':' && c != '[' && c != ']')
-                return false;
-        }
-
-        return true;
-    }
-
     std::string trimURI(const std::string &uriStr)
     {
         Poco::URI uri(uriStr);
@@ -502,77 +452,6 @@ namespace Util
         std::tie(filename, ext) = Util::splitLast(filename, '.', false);
 
         return std::make_tuple(base, filename, ext, params);
-    }
-
-    static std::unordered_map<std::string, std::string> AnonymizedStrings;
-    static std::atomic<unsigned> AnonymizationCounter(0);
-    static std::mutex AnonymizedMutex;
-
-    void mapAnonymized(const std::string& plain, const std::string& anonymized)
-    {
-        if (plain.empty() || anonymized.empty())
-            return;
-
-        if (Log::traceEnabled() && plain != anonymized)
-            LOG_TRC("Anonymizing [" << plain << "] -> [" << anonymized << "].");
-
-        std::unique_lock<std::mutex> lock(AnonymizedMutex);
-
-        AnonymizedStrings[plain] = anonymized;
-    }
-
-    std::string anonymize(const std::string& text, const std::uint64_t nAnonymizationSalt)
-    {
-        {
-            std::unique_lock<std::mutex> lock(AnonymizedMutex);
-
-            const auto it = AnonymizedStrings.find(text);
-            if (it != AnonymizedStrings.end())
-            {
-                if (Log::traceEnabled() && text != it->second)
-                    LOG_TRC("Found anonymized [" << text << "] -> [" << it->second << "].");
-                return it->second;
-            }
-        }
-
-        // Modified 64-bit FNV-1a to add salting.
-        // For the algorithm and the magic numbers, see http://isthe.com/chongo/tech/comp/fnv/
-        std::uint64_t hash = 0xCBF29CE484222325LL;
-        hash ^= nAnonymizationSalt;
-        hash *= 0x100000001b3ULL;
-        for (const char c : text)
-        {
-            hash ^= static_cast<std::uint64_t>(c);
-            hash *= 0x100000001b3ULL;
-        }
-
-        hash ^= nAnonymizationSalt;
-        hash *= 0x100000001b3ULL;
-
-        // Generate the anonymized string. The '#' is to hint that it's anonymized.
-        // Prepend with count to make it unique within a single process instance,
-        // in case we get collisions (which we will, eventually). N.B.: Identical
-        // strings likely to have different prefixes when logged in WSD process vs. Kit.
-        std::string res
-            = '#' + Util::encodeId(AnonymizationCounter++, 0) + '#' + Util::encodeId(hash, 0) + '#';
-        mapAnonymized(text, res);
-        return res;
-    }
-
-    void clearAnonymized()
-    {
-        AnonymizedStrings.clear();
-    }
-
-    std::string anonymizeUrl(const std::string& url, const std::uint64_t nAnonymizationSalt)
-    {
-        std::string base;
-        std::string filename;
-        std::string ext;
-        std::string params;
-        std::tie(base, filename, ext, params) = Util::splitUrl(url);
-
-        return base + Util::anonymize(filename, nAnonymizationSalt) + ext + params;
     }
 
     std::string getTimeNow(const char* format)
@@ -833,6 +712,30 @@ namespace Util
         std::_Exit(code);
     }
 
+    std::string getMallocInfo()
+    {
+        std::string info;
+
+#if defined __GLIBC__
+        size_t size = 0;
+        char* p = nullptr;
+        FILE* f = open_memstream(&p, &size);
+        if (f)
+        {
+            // Dump malloc internal structures.
+            malloc_info(0, f);
+            fclose(f);
+
+            if (size)
+                info = std::string(p, size);
+
+            free(p);
+        }
+#endif // __GLIBC__
+
+        return info;
+    }
+
     bool matchRegex(const std::set<std::string>& set, const std::string& subject)
     {
         if (set.find(subject) != set.end())
@@ -867,9 +770,9 @@ namespace Util
 
     std::string getValue(const std::map<std::string, std::string>& map, const std::string& subject)
     {
-        if (map.find(subject) != map.end())
+        if (const auto& it = map.find(subject); it != map.end())
         {
-            return map.at(subject);
+            return it->second;
         }
 
         // Not a perfect match, try regex.
@@ -1094,6 +997,22 @@ namespace Util
             }
         }
         return s;
+    }
+
+    Rectangle::Rectangle(const std::string &rectangle)
+    {
+        StringVector tokens(StringVector::tokenize(rectangle, ','));
+        if (tokens.size() == 4)
+        {
+            _x1 = std::stoi(tokens[0]);
+            _y1 = std::stoi(tokens[1]);
+            _x2 = _x1 + std::stoi(tokens[2]);
+            _y2 = _y1 + std::stoi(tokens[3]);
+        }
+        else
+        {
+            _x1 = _y1 = _x2 = _y2 = 0;
+        }
     }
 
 } // namespace Util

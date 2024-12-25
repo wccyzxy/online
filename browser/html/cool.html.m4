@@ -166,7 +166,7 @@ m4_ifelse(MOBILEAPP,[true],
       </div>
     </div>
 
-    <div id="spreadsheet-toolbar"></div>
+    <div id="spreadsheet-toolbar" class="hidden"></div>
 
     <div id="mobile-edit-button">
       <div id="mobile-edit-button-image"></div>
@@ -269,6 +269,7 @@ m4_ifelse(MOBILEAPP, [true],
       data-wasm-enabled = "%WASM_ENABLED%"
       data-indirection-url = "%INDIRECTION_URL%"
       data-geolocation-setup = "%GEOLOCATION_SETUP%"
+      data-canvas-slideshow-enabled = "%CANVAS_SLIDESHOW_ENABLED%"
       />
     ])
 

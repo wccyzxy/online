@@ -13,7 +13,7 @@
  * local & remote clipboard data.
  */
 
-/* global app DocUtil _ brandProductName $ ClipboardItem Promise GraphicSelection */
+/* global app DocUtil _ brandProductName $ ClipboardItem Promise GraphicSelection cool */
 
 // Get all interesting clipboard related events here, and handle
 // download logic in one place ...
@@ -41,6 +41,7 @@ L.Clipboard = L.Class.extend({
 		// Tracks waiting for UNO commands to complete
 		this._commandCompletion = [];
 		this._map.on('commandresult', this._onCommandResult, this);
+		this._map.on('clipboardchanged', this._onCommandResult, this);
 
 		div.setAttribute('id', this._dummyDivName);
 		div.style.userSelect = 'text !important';
@@ -114,6 +115,9 @@ L.Clipboard = L.Class.extend({
 	},
 
 	getMetaBase: function() {
+		if (window.ThisIsAMobileApp) {
+			return 'collabora-online-mobile'; // makeHttpUrl does not work with the file:// protocol used in mobile apps...
+		}
 		return window.makeHttpUrl('');
 	},
 
@@ -245,49 +249,49 @@ L.Clipboard = L.Class.extend({
 	// forClipboard: a boolean telling if we need the "Confirm copy to clipboard" link in the end
 	// completeFn: called on completion - with response.
 	// progressFn: allows splitting the progress bar up.
-	_doAsyncDownload: function(type,url,optionalFormData,forClipboard,completeFn,progressFn,onErrorFn) {
-		try {
-			var that = this;
-			var request = new XMLHttpRequest();
+	_doAsyncDownload: async function(type,url,optionalFormData,forClipboard,progressFn,) {
+		var request = new XMLHttpRequest();
 
-			// avoid to invoke the following code if the download widget depends on user interaction
-			if (!that._downloadProgress || that._downloadProgress.isClosed()) {
-				that._startProgress(false);
-				that._downloadProgress.startProgressMode();
-			}
-			request.onload = function() {
-				that._downloadProgress._onComplete();
+		// avoid to invoke the following code if the download widget depends on user interaction
+		if (!this._downloadProgress || this._downloadProgress.isClosed()) {
+			this._startProgress(false);
+			this._downloadProgress.startProgressMode();
+		}
+
+		return await new Promise((resolve, reject) => {
+			request.onload = () => {
+				this._downloadProgress._onComplete();
 				if (!forClipboard) {
-					that._downloadProgress._onClose();
+					this._downloadProgress._onClose();
 				}
 
 				// For some reason 400 error from the server doesn't
 				// invoke onerror callback, but we do get here with
 				// size==0, which signifies no response from the server.
 				// So we check the status code instead.
-				if (this.status == 200) {
-					completeFn(this.response);
-				} else if (onErrorFn) {
-					onErrorFn(this.response);
+				if (request.status == 200) {
+					resolve(request.response);
+				} else {
+					reject(request.response);
 				}
 			};
-			request.onerror = function() {
-				if (onErrorFn)
-					onErrorFn();
-				that._downloadProgress._onComplete();
-				that._downloadProgress._onClose();
+			request.onerror = (error) => {
+				reject(error);
+				this._downloadProgress._onComplete();
+				this._downloadProgress._onClose();
 			};
 
-			request.ontimeout = function() {
-				that._map.uiManager.showSnackbar(_('warning: copy/paste request timed out'));
-				that._downloadProgress._onClose();
+			request.ontimeout = () => {
+				this._map.uiManager.showSnackbar(_('warning: copy/paste request timed out'));
+				this._downloadProgress._onClose();
+				reject('request timed out');
 			};
 
-			request.upload.addEventListener('progress', function (e) {
+			request.upload.addEventListener('progress', (e) => {
 				if (e.lengthComputable) {
 					var percent = progressFn(e.loaded / e.total * 100);
 					var progress = { statusType: 'setvalue', value: percent };
-					that._downloadProgress._onUpdateProgress(progress);
+					this._downloadProgress._onUpdateProgress(progress);
 				}
 			}, false);
 
@@ -302,75 +306,72 @@ L.Clipboard = L.Class.extend({
 				request.send(optionalFormData);
 			else
 				request.send();
-		} catch (error) {
-			if (onErrorFn)
-				onErrorFn();
-		}
+		});
 	},
 
 	// Suck the data from one server to another asynchronously ...
-	_dataTransferDownloadAndPasteAsync: function(src, dest, fallbackHtml) {
-		var that = this;
+	_dataTransferDownloadAndPasteAsync: async function(src, fallbackHtml) {
 		// FIXME: add a timestamp in the links (?) ignore old / un-responsive servers (?)
-		that._doAsyncDownload(
-			'GET', src, null, false,
-			function(response) {
-				window.app.console.log('download done - response ' + response);
-				var formData = new FormData();
-				formData.append('data', response, 'clipboard');
-				that._doAsyncDownload(
-					'POST', dest, formData, false,
-					function() {
-						if (that._checkAndDisablePasteSpecial()) {
-							window.app.console.log('up-load done, now paste special');
-							app.socket.sendMessage('uno .uno:PasteSpecial');
-						} else {
-							window.app.console.log('up-load done, now paste');
-							app.socket.sendMessage('uno .uno:Paste');
-						}
+		let response;
 
-					}.bind(this),
-					function(progress) { return 50 + progress/2; }
-				);
-			}.bind(this),
-			function(progress) { return progress/2; },
-			function() {
-				window.app.console.log('failed to download clipboard using fallback html');
+		try {
+			response = await this._doAsyncDownload(
+				'GET', src, null, false,
+				function(progress) { return progress/2; },
+			);
+		} catch (_error) {
+			window.app.console.log('failed to download clipboard using fallback html');
 
-				// If it's the stub, avoid pasting.
-				if (that._isStubHtml(fallbackHtml))
-				{
-					// Let the user know they haven't really copied document content.
-					that._map.uiManager.showInfoModal('data transfer warning', '', _('Failed to download clipboard, please re-copy'));
-					return;
-				}
-
-				var formData = new FormData();
-				let commandName = null;
-				if (that._checkAndDisablePasteSpecial()) {
-					commandName = '.uno:PasteSpecial';
-				} else {
-					commandName = '.uno:Paste';
-				}
-				const data = JSON.stringify({
-					url: src,
-					commandName: commandName,
-				});
-				formData.append('data', new Blob([data]), 'clipboard');
-				that._doAsyncDownload(
-					'POST', dest, formData, false,
-					function() {
-					}.bind(this),
-					function(progress) { return 50 + progress/2; },
-					function() {
-						that.dataTransferToDocumentFallback(null, fallbackHtml);
-					}
-				);
+			// If it's the stub, avoid pasting.
+			if (this._isStubHtml(fallbackHtml))
+			{
+				// Let the user know they haven't really copied document content.
+				this._map.uiManager.showInfoModal('data transfer warning', '', _('Failed to download clipboard, please re-copy'));
+				return;
 			}
+
+			var formData = new FormData();
+			let commandName = null;
+			if (this._checkAndDisablePasteSpecial()) {
+				commandName = '.uno:PasteSpecial';
+			} else {
+				commandName = '.uno:Paste';
+			}
+			const data = JSON.stringify({
+				url: src,
+				commandName: commandName,
+			});
+			formData.append('data', new Blob([data]), 'clipboard');
+			try {
+				await this._doAsyncDownload(
+					'POST', this.getMetaURL(), formData, false,
+					function(progress) { return 50 + progress/2; },
+				);
+			} catch (_error) {
+				await this.dataTransferToDocumentFallback(null, fallbackHtml);
+			}
+			return;
+		}
+
+		window.app.console.log('download done - response ' + response);
+		var formData = new FormData();
+		formData.append('data', response, 'clipboard');
+
+		await this._doAsyncDownload(
+			'POST', this.getMetaURL(), formData, false,
+			function(progress) { return 50 + progress/2; }
 		);
+
+		if (this._checkAndDisablePasteSpecial()) {
+			window.app.console.log('up-load done, now paste special');
+			app.socket.sendMessage('uno .uno:PasteSpecial');
+		} else {
+			window.app.console.log('up-load done, now paste');
+			app.socket.sendMessage('uno .uno:Paste');
+		}
 	},
 
-	_onFileLoadFunc: function(file) {
+	_onImageLoadFunc: function (file) {
 		var that = this;
 		return function(e) {
 			that._pasteTypedBlob(file.type, e.target.result);
@@ -383,18 +384,31 @@ L.Clipboard = L.Class.extend({
 		app.socket.sendMessage(blob);
 	},
 
-	_asyncReadPasteImage: function(file) {
+	_asyncReadPasteFile: function (file) {
 		if (file.type.match(/image.*/)) {
-			var reader = new FileReader();
-			reader.onload = this._onFileLoadFunc(file);
-			reader.readAsArrayBuffer(file);
-			return true;
+			return this._asyncReadPasteImage(file);
+		}
+		if (file.type.match(/audio.*/) || file.type.match(/video.*/)) {
+			return this._asyncReadPasteAVMedia(file);
 		}
 		return false;
 	},
 
+	_asyncReadPasteImage: function (file) {
+		var reader = new FileReader();
+		reader.onload = this._onImageLoadFunc(file);
+		reader.readAsArrayBuffer(file);
+		return true;
+	},
+
+	_asyncReadPasteAVMedia: function (file) {
+		this._map.insertMultimedia(file);
+		return true;
+	},
+
 	// Returns true if it finished synchronously, and false if it have started an async operation
 	// that will likely end at a later time (required to avoid closing progress bar in paste(ev))
+	// FIXME: This comment is a lie if dataTransferToDocumentFallback is called, as it calls _doAsyncDownload
 	dataTransferToDocument: function (dataTransfer, preferInternal, htmlText, usePasteKeyEvent) {
 		// Look for our HTML meta magic.
 		//   cf. ClientSession.cpp /textselectioncontent:/
@@ -417,7 +431,7 @@ L.Clipboard = L.Class.extend({
 		if (meta !== '')
 		{
 			window.app.console.log('Transfer between servers\n\t"' + meta + '" vs. \n\t"' + id + '"');
-			this._dataTransferDownloadAndPasteAsync(meta, this.getMetaURL(), htmlText);
+			this._dataTransferDownloadAndPasteAsync(meta, htmlText);
 			return false; // just started async operation - did not finish yet
 		}
 
@@ -426,8 +440,20 @@ L.Clipboard = L.Class.extend({
 		return true;
 	},
 
-	dataTransferToDocumentFallback: function(dataTransfer, htmlText, usePasteKeyEvent) {
+	_sendToInternalClipboard: async function (content) {
+		if (window.ThisIsTheiOSApp) {
+			await window.webkit.messageHandlers.clipboard.postMessage(`sendToInternal ${await content.text()}`); // no need to base64 in this direction...
+		} else {
+			var formData = new FormData();
+			formData.append('file', content);
 
+			return await this._doAsyncDownload('POST', this.getMetaURL(), formData, false,
+				function(progress) { return progress; }
+			);
+		}
+	},
+
+	dataTransferToDocumentFallback: async function(dataTransfer, htmlText, usePasteKeyEvent) {
 		var content;
 		if (dataTransfer) {
 			// Suck HTML content out of dataTransfer now while it feels like working.
@@ -459,10 +485,9 @@ L.Clipboard = L.Class.extend({
 					if (files !== null)
 					{
 						for (var f = 0; f < files.length; ++f)
-							this._asyncReadPasteImage(files[f]);
-					}
-					else // IE / Edge
-						this._asyncReadPasteImage(dataTransfer.items[t].getAsFile());
+							this._asyncReadPasteFile(files[f]);
+					} // IE / Edge
+					else this._asyncReadPasteFile(dataTransfer.items[t].getAsFile());
 				}
 			}
 
@@ -473,23 +498,18 @@ L.Clipboard = L.Class.extend({
 			return;
 		}
 
-		if (content != null) {
-			window.app.console.log('Normal HTML, so smart paste not possible');
-
-			var formData = new FormData();
-			formData.append('file', content);
-
-			var that = this;
-			this._doAsyncDownload('POST', this.getMetaURL(), formData, false,
-				function() {
-					window.app.console.log('Posted ' + content.size + ' bytes successfully');
-					that._doInternalPaste(that._map, usePasteKeyEvent);
-				},
-				function(progress) { return progress; }
-					    );
-		} else {
+		if (content == null) {
 			window.app.console.log('Nothing we can paste on the clipboard');
+			return;
 		}
+
+		window.app.console.log('Normal HTML, so smart paste not possible');
+
+		await this._sendToInternalClipboard(content);
+
+		window.app.console.log('clipboard: Sent ' + content.size + ' bytes successfully');
+
+		this._doInternalPaste(this._map, usePasteKeyEvent);
 	},
 
 	_checkSelection: function() {
@@ -500,12 +520,6 @@ L.Clipboard = L.Class.extend({
 
 	_getHtmlForClipboard: function() {
 		var text;
-
-		if ($('.ui-edit').is(':focus'))
-			return $('.ui-edit').value();
-
-		if ($('.w2ui-input').is(':focus'))
-			return $('.w2ui-input').value();
 
 		if (this._selectionType === 'complex' || GraphicSelection.hasActiveSelection()) {
 			window.app.console.log('Copy/Cut with complex/graphical selection');
@@ -534,14 +548,7 @@ L.Clipboard = L.Class.extend({
 
 	// returns whether we shold stop processing the event
 	populateClipboard: function(ev) {
-		this._checkSelection();
-
-		if (this._navigatorClipboardWrite()) {
-			// This is the codepath where the browser initiates the clipboard operation,
-			// e.g. the keyboard is used.
-			return true;
-		}
-
+		// If the copy paste API is not supported, we download the content as a fallback method.
 		var text = this._getHtmlForClipboard();
 
 		var plainText = DocUtil.stripHTML(text);
@@ -564,8 +571,6 @@ L.Clipboard = L.Class.extend({
 			window.app.console.log('Put "' + text + '" on the clipboard');
 			this._clipboardSerial++;
 		}
-
-		return true; // prevent default
 	},
 
 	_isAnyInputFieldSelected: function(forCopy = false) {
@@ -589,7 +594,7 @@ L.Clipboard = L.Class.extend({
 			&& !this.isPasteSpecialDialogOpen())
 			return true;
 
-		if (app.view.commentHasFocus)
+		if (cool.Comment.isAnyFocus())
 		    return true;
 
 		if (forCopy) {
@@ -685,18 +690,19 @@ L.Clipboard = L.Class.extend({
 	},
 
 	// Encourage browser(s) to actually execute the command
-	_execCopyCutPaste: function(operation, cmd) {
+	_execCopyCutPaste: function(operation, cmd, params) {
 		var serial = this._clipboardSerial;
 
 		this._unoCommandForCopyCutPaste = cmd;
 
-		if (operation !== 'paste' && this._navigatorClipboardWrite()) {
+		if (operation !== 'paste' && cmd !== undefined && this._navigatorClipboardWrite(params)) {
 			// This is the codepath where an UNO command initiates the clipboard
 			// operation.
 			return;
 		}
 
-		if (document.execCommand(operation) &&
+		if (!window.ThisIsTheiOSApp && // in mobile apps, we want to drop straight to navigatorClipboardRead as execCommand will require user interaction...
+			document.execCommand(operation) &&
 			serial !== this._clipboardSerial) {
 			window.app.console.log('copied successfully');
 			this._unoCommandForCopyCutPaste = null;
@@ -749,34 +755,6 @@ L.Clipboard = L.Class.extend({
 				that._warnCopyPaste();
 			}
 		}, 150 /* ms */);
-	},
-
-	// navigator.clipboard.read() callback
-	_navigatorClipboardReadCallback: function(clipboardContents) {
-		if (clipboardContents.length < 1) {
-			window.app.console.log('navigator.clipboard has no clipboard items');
-			return;
-		}
-
-		var clipboardContent = clipboardContents[0];
-
-		var that = this;
-		if (clipboardContent.types.includes('text/html')) {
-			clipboardContent.getType('text/html').then(function(blob) {
-				that._navigatorClipboardGetTypeCallback(clipboardContent, blob, 'text/html');
-			}, function(error) {
-				window.app.console.log('clipboardContent.getType(text/html) failed: ' + error.message);
-			});
-		} else if (clipboardContent.types.includes('text/plain')) {
-			clipboardContent.getType('text/plain').then(function(blob) {
-				that._navigatorClipboardGetTypeCallback(clipboardContent, blob, 'text/plain');
-			}, function(error) {
-				window.app.console.log('clipboardContent.getType(text/plain) failed: ' + error.message);
-			});
-		} else {
-			window.app.console.log('navigator.clipboard has no text/html or text/plain');
-			return;
-		}
 	},
 
 	// ClipboardContent.getType() callback: used with the Paste button
@@ -837,30 +815,51 @@ L.Clipboard = L.Class.extend({
 
 	// Gets status of a copy/paste command from the remote Kit
     _onCommandResult: function(e) {
-        if (e.commandName === '.uno:Copy' || e.commandName === '.uno:Cut')
+        if (e.commandName === '.uno:Copy' || e.commandName === '.uno:Cut' || e.commandName === '.uno:CopyHyperlinkLocation')
 		{
 			window.app.console.log('Resolve clipboard command promise ' + e.commandName);
-			const that = this;
-			while (that._commandCompletion.length > 0)
+			while (this._commandCompletion.length > 0)
 			{
-				let a = that._commandCompletion.shift();
-				a.resolve(a.fetch().then(function(text) {
-					const content = that.parseClipboard(text)[a.shorttype];
-					const blob = new Blob([content], { 'type': a.mimetype });
-					console.log('Generate blob of type ' + a.mimetype + ' from ' +a.shorttype + ' text: ' +content);
-					return blob;
-				}));
+				let a = this._commandCompletion.shift();
+				a.resolve();
 			}
 		}
 	},
 
+	_sendCommandAndWaitForCompletion: function(command, params) {
+		if (command !== '.uno:Copy' && command !== '.uno:Cut' && command !== '.uno:CopyHyperlinkLocation') {
+			console.error(`_sendCommandAndWaitForCompletion was called with '${command}', but anything except Copy or Cut will never complete`);
+			return null;
+		}
+
+		if (this._commandCompletion.length > 0) {
+			console.warn('Already have ' + this._commandCompletion.length + ' pending clipboard command(s)');
+			return null;
+		}
+
+		if (!params) app.socket.sendMessage('uno ' + command);
+		else app.map.sendUnoCommand(command, params);
+
+		return new Promise((resolve, reject) => {
+			window.app.console.log('New ' + command + ' promise');
+			// FIXME: add a timeout cleanup too ...
+			this._commandCompletion.push({
+				resolve: resolve,
+				reject: reject,
+			});
+		});
+	},
+
+	_parseClipboardFetchResult: function(text, mimetype, shorttype) {
+		const content = this.parseClipboard(text)[shorttype];
+		const blob = new Blob([content], { 'type': mimetype });
+		console.log('Generate blob of type ' + mimetype + ' from ' + shorttype + ' text: ' + content);
+		return blob;
+	},
+
 	// Executes the navigator.clipboard.write() call, if it's available.
-	_navigatorClipboardWrite: function() {
-		if (!L.Browser.clipboardApiAvailable) {
-			// Show a visible warning, this should not happen in production.
-			this._map.uiManager.showSnackbar(
-				_('The async Clipboard API is not supported by your browser, switching to HTTPS is meant to fix that.')
-			);
+	_navigatorClipboardWrite: function(params) {
+		if (!L.Browser.clipboardApiAvailable && !window.ThisIsTheiOSApp) {
 			return false;
 		}
 
@@ -868,65 +867,58 @@ L.Clipboard = L.Class.extend({
 			return false;
 		}
 
+		this._asyncAttemptNavigatorClipboardWrite(params);
+		return true;
+	},
+
+	_asyncAttemptNavigatorClipboardWrite: async function(params) {
 		const command = this._unoCommandForCopyCutPaste;
-		app.socket.sendMessage('uno ' + command);
+		const check_ = await this._sendCommandAndWaitForCompletion(command, params);
+
+		if (check_ === null)
+			return; // Either wrong command or a pending event.
 
 		// This is sent down the websocket URL which can race with the
 		// web fetch - so first step is to wait for the result of
 		// that command so we are sure the clipboard is set before
 		// fetching it.
 
-		const that = this;
+		if (window.ThisIsTheiOSApp) {
+			await window.webkit.messageHandlers.clipboard.postMessage(`write`);
+		} else {
+			const url = this.getMetaURL() + '&MimeType=text/html,text/plain;charset=utf-8';
 
-		if (that._commandCompletion.length > 0)
-			window.app.console.error('Already have ' + that._commandCompletion.length +
-						 ' pending clipboard command(s)');
+			var result = await fetch(url);
+			var text = await result.text();
 
-		const url = that.getMetaURL() + '&MimeType=text/html,text/plain;charset=utf-8';
-
-		// Share a single fetch
-		var fetchPromise = function() {
-			return new Promise((resolve, reject) => {
-				try {
-					var result = fetch(url).then(response => response.text());
-					resolve(result);
-				} catch (err) {
-					reject(err);
-				}
+			const clipboardItem = new ClipboardItem({
+				'text/html': this._parseClipboardFetchResult(text, 'text/html', 'html'),
+				'text/plain': this._parseClipboardFetchResult(text, 'text/plain', 'plain')
 			});
-		};
+			let clipboard = navigator.clipboard;
+			if (L.Browser.cypressTest) {
+				clipboard = this._dummyClipboard;
+			}
 
-		var awaitPromise = function(url, mimetype, shorttype) {
-			return new Promise((resolve, reject) => {
-				window.app.console.log('New ' + command + ' promise');
-				// FIXME: add a timeout cleanup too ...
-				that._commandCompletion.push({ fetch: fetchPromise, command: command,
-							       resolve: resolve, reject: reject,
-							       mimetype: mimetype, shorttype: shorttype});
-		}); };
-
-		const text = new ClipboardItem({
-			'text/html': awaitPromise(url, 'text/html', 'html'),
-			'text/plain': awaitPromise(url, 'text/plain', 'plain')
-		});
-		let clipboard = navigator.clipboard;
-		if (L.Browser.cypressTest) {
-			clipboard = this._dummyClipboard;
+			try {
+				await clipboard.write([clipboardItem]);
+			} catch (error) {
+				// When document is not focused, writing to clipboard is not allowed. But this error shouldn't stop the usage of clipboard API.
+				if (!document.hasFocus()) {
+					window.app.console.warn('navigator.clipboard.write() failed: ' + error.message);
+				}
+				else {
+					window.app.console.error('navigator.clipboard.write() failed: ' + error.message);
+					// Warn that the copy failed.
+					this._warnCopyPaste();
+					// Once broken, always broken.
+					L.Browser.clipboardApiAvailable = false;
+					window.prefs.set('clipboardApiAvailable', false);
+					// Prefetch selection, so next time copy will work with the keyboard.
+					app.socket.sendMessage('gettextselection mimetype=text/html,text/plain;charset=utf-8');
+				}
+			}
 		}
-		clipboard.write([text]).then(function() {
-		}, function(error) {
-			window.app.console.log('navigator.clipboard.write() failed: ' + error.message);
-
-			// Warn that the copy failed.
-			that._warnCopyPaste();
-			// Once broken, always broken.
-			L.Browser.clipboardApiAvailable = false;
-			window.prefs.set('clipboardApiAvailable', 'false');
-			// Prefetch selection, so next time copy will work with the keyboard.
-			app.socket.sendMessage('gettextselection mimetype=text/html,text/plain;charset=utf-8');
-		});
-
-		return true;
 	},
 
 	// Parses the result from the clipboard endpoint into HTML and plain text.
@@ -958,57 +950,130 @@ L.Clipboard = L.Class.extend({
 
 	// Executes the navigator.clipboard.read() call, if it's available.
 	_navigatorClipboardRead: function(isSpecial) {
-		if (!L.Browser.clipboardApiAvailable) {
+		if (!L.Browser.clipboardApiAvailable && !window.ThisIsTheiOSApp) {
 			return false;
 		}
 
-		var that = this;
+		this._asyncAttemptNavigatorClipboardRead(isSpecial);
+		return true;
+	},
+
+	_iOSReadClipboard: async function() {
+		const encodedClipboardData = await window.webkit.messageHandlers.clipboard.postMessage('read');
+
+		if (encodedClipboardData === "(internal)") {
+			return null;
+		}
+
+		const clipboardData = Array.from(
+			encodedClipboardData.split(' '),
+		).map((encoded) =>
+			(encoded === '(null)' ? '' : window.b64d(encoded)),
+		);
+
+		const dataByMimeType = {};
+
+		if (clipboardData[0]) {
+			dataByMimeType['text/plain'] = new Blob([clipboardData[0]]);
+		}
+
+		if (clipboardData[1]) {
+			dataByMimeType['text/html'] = new Blob([clipboardData[1]]);
+		}
+
+		if (Object.keys(dataByMimeType).length === 0) {
+			return [];
+		}
+
+		return [new ClipboardItem(dataByMimeType)];
+	},
+
+	_asyncAttemptNavigatorClipboardRead: async function(isSpecial) {
 		var clipboard = navigator.clipboard;
 		if (L.Browser.cypressTest) {
 			clipboard = this._dummyClipboard;
 		}
-		clipboard.read().then(function(clipboardContents) {
-			if (isSpecial) {
-				that._navigatorClipboardPasteSpecial = true;
+		let clipboardContents;
+		try {
+			clipboardContents = window.ThisIsTheiOSApp
+				? await this._iOSReadClipboard()
+				: await clipboard.read();
+
+			if (clipboardContents === null) {
+				this._doInternalPaste(this._map, false);
+				return; // Internal paste, skip the rest of the browser paste code
 			}
-			that._navigatorClipboardReadCallback(clipboardContents);
-		}, function(error) {
+		} catch (error) {
 			window.app.console.log('navigator.clipboard.read() failed: ' + error.message);
 			if (isSpecial) {
 				// Fallback to the old code, as in filterExecCopyPaste().
-				that._openPasteSpecialPopup();
+				this._openPasteSpecialPopup();
 			} else {
 				// Fallback to the old code, as in _execCopyCutPaste().
-				that._afterCopyCutPaste('paste');
+				this._afterCopyCutPaste('paste');
 			}
-		});
-		return true;
+			return;
+		}
+
+		if (isSpecial) {
+			this._navigatorClipboardPasteSpecial = true;
+		}
+
+		if (clipboardContents.length < 1) {
+			window.app.console.log('clipboard has no items');
+			return;
+		}
+
+		var clipboardContent = clipboardContents[0];
+
+		if (clipboardContent.types.includes('text/html')) {
+			let blob;
+			try {
+				blob = await clipboardContent.getType('text/html');
+			} catch (error) {
+				window.app.console.log('clipboardContent.getType(text/html) failed: ' + error.message);
+				return;
+			}
+			this._navigatorClipboardGetTypeCallback(clipboardContent, blob, 'text/html');
+		} else if (clipboardContent.types.includes('text/plain')) {
+			let blob;
+			try {
+				blob = await clipboardContent.getType('text/plain');
+			} catch (error) {
+				window.app.console.log('clipboardContent.getType(text/plain) failed: ' + error.message);
+				return;
+			}
+			this._navigatorClipboardGetTypeCallback(clipboardContent, blob, 'text/plain');
+		} else {
+			window.app.console.log('navigator.clipboard has no text/html or text/plain');
+			return;
+		}
 	},
 
 	// Pull UNO clipboard commands out from menus and normal user input.
 	// We try to massage and re-emit these, to get good security event / credentials.
-	filterExecCopyPaste: function(cmd) {
-		if (this._map['wopi'].DisableCopy && (cmd === '.uno:Copy' || cmd === '.uno:Cut')) {
+	filterExecCopyPaste: function(cmd, params) {
+		if (this._map['wopi'].DisableCopy && (cmd === '.uno:Copy' || cmd === '.uno:Cut' || cmd === '.uno:CopyHyperlinkLocation')) {
 			// perform internal operations
 			app.socket.sendMessage('uno ' + cmd);
 			return true;
 		}
 
-		if (window.ThisIsAMobileApp) {
+		if (window.ThisIsTheAndroidApp) {
 			// perform internal operations
 			app.socket.sendMessage('uno ' + cmd);
 			return true;
 		}
 
-		if (cmd === '.uno:Copy' || (L.Browser.mobile && L.Browser.safari && cmd === '.uno:CopyHyperlinkLocation')) {
-			this._execCopyCutPaste('copy', cmd);
+		if (cmd === '.uno:Copy' || cmd === '.uno:CopyHyperlinkLocation') {
+			this._execCopyCutPaste('copy', cmd, params);
 		} else if (cmd === '.uno:Cut') {
 			this._execCopyCutPaste('cut', cmd);
 		} else if (cmd === '.uno:Paste') {
 			this._execCopyCutPaste('paste', cmd);
 		} else if (cmd === '.uno:PasteSpecial') {
 			if (this._navigatorClipboardRead(true)) {
-				return;
+				return true;
 			}
 			this._openPasteSpecialPopup();
 		} else {
@@ -1040,10 +1105,16 @@ L.Clipboard = L.Class.extend({
 				this._clipboardSerial++;
 			}
 		} else {
-			preventDefault = this.populateClipboard(ev);
+			this._unoCommandForCopyCutPaste = `.uno:${unoName}`;
+			this._checkSelection();
+
+			// This is the codepath (_navigatorClipboardWrite) where the browser initiates the clipboard operation, e.g. the keyboard is used.
+			if (!this._navigatorClipboardWrite()) {
+				app.socket.sendMessage('uno .uno:' + unoName);
+				this.populateClipboard(ev);
+			}
 		}
 
-		app.socket.sendMessage('uno .uno:' + unoName);
 		if (ev.clipboardData && unoName === 'Cut') {
 			// Cut text is not removed from the editable area,
 			// so we need to request the focused paragraph.
@@ -1182,7 +1253,7 @@ L.Clipboard = L.Class.extend({
 		if (!this._downloadProgress || this._downloadProgress.isClosed())
 			return;
 
-		if (this._downloadProgressStatus() === 'downloadButton')
+		if (['downloadButton', 'confirmPasteButton'].includes(this._downloadProgressStatus()))
 			this._stopHideDownload();
 	},
 
@@ -1338,7 +1409,7 @@ L.Clipboard = L.Class.extend({
 });
 
 L.clipboard = function(map) {
-	if (window.ThisIsAMobileApp)
-		window.app.console.log('======> Assertion failed!? No L.Clipboard object should be needed in a mobile app');
+	if (window.ThisIsTheAndroidApp)
+		window.app.console.log('======> Assertion failed!? No L.Clipboard object should be needed in the Android app');
 	return new L.Clipboard(map);
 };

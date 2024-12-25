@@ -13,8 +13,8 @@
 
 #include "AdminModel.hpp"
 
-#include "net/WebSocketHandler.hpp"
-#include "COOLWSD.hpp"
+#include <net/WebSocketHandler.hpp>
+#include <common/ConfigUtil.hpp>
 
 class Admin;
 
@@ -168,7 +168,8 @@ public:
     void setViewLoadDuration(const std::string& docKey, const std::string& sessionId, std::chrono::milliseconds viewLoadDuration);
     void setDocWopiDownloadDuration(const std::string& docKey, std::chrono::milliseconds wopiDownloadDuration);
     void setDocWopiUploadDuration(const std::string& docKey, const std::chrono::milliseconds uploadDuration);
-    void addSegFaultCount(unsigned segFaultCount);
+    void addErrorExitCounters(unsigned segFaultCount, unsigned killedCount,
+                              unsigned oomKilledCount);
     void addLostKitsTerminated(unsigned lostKitsTerminated);
 
     void getMetrics(std::ostringstream &metrics);
@@ -181,7 +182,7 @@ public:
 
     bool logAdminAction()
     {
-        return COOLWSD::getConfigValue<bool>("admin_console.logging.admin_action", true);
+        return ConfigUtil::getConfigValue<bool>("admin_console.logging.admin_action", true);
     }
 
     void routeTokenSanityCheck();

@@ -132,6 +132,8 @@ export class Comment extends CanvasSectionObject {
 		this.sectionProperties.childCommentOffset = 8;
 
 		this.convertRectanglesToCoreCoordinates(); // Convert rectangle coordiantes into core pixels on initialization.
+
+		app.map.on('sheetgeometrychanged', this.setPositionAndSize.bind(this));
 	}
 
 	// Comments import can be costly if the document has a lot of them. If they are all imported/initialized
@@ -168,8 +170,14 @@ export class Comment extends CanvasSectionObject {
 		var events = ['click', 'dblclick', 'mousedown', 'mouseup', 'mouseover', 'mouseout', 'keydown', 'keypress', 'keyup', 'touchstart', 'touchmove', 'touchend'];
 		L.DomEvent.on(this.sectionProperties.container, 'click', this.onMouseClick, this);
 		L.DomEvent.on(this.sectionProperties.container, 'keydown', this.onEscKey, this);
-		L.DomEvent.on(this.sectionProperties.container, 'wheel', app.sectionContainer.onMouseWheel, app.sectionContainer);
-		L.DomEvent.on(this.sectionProperties.contentNode, 'wheel', this.onMouseWheel, this);
+
+		this.sectionProperties.container.onwheel = function(e: WheelEvent) {
+			// Don't scroll the document if mouse is over comment content. Scrolling the comment content is priority.
+			if (!this.sectionProperties.contentNode.matches(':hover')) {
+				e.preventDefault();
+				app.sectionContainer.onMouseWheel(e);
+			}
+		}.bind(this);
 
 		for (var it = 0; it < events.length; it++) {
 			L.DomEvent.on(this.sectionProperties.container, events[it], L.DomEvent.stopPropagation, this);
@@ -186,18 +194,6 @@ export class Comment extends CanvasSectionObject {
 		this.update();
 
 		this.pendingInit = false;
-	}
-
-	// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-	onMouseWheel(point: Array<number>, delta: Array<number>, e: MouseEvent): void {
-		if ((e as any).currentTarget.clientHeight === (e as any).currentTarget.scrollHeight)
-			return;
-
-		var _scrollTop = (e as any).currentTarget.scrollTop;
-		if ((e as any).deltaY < 0 && _scrollTop > 0)
-			e.stopPropagation();
-		else if ((e as any).deltaY > 0 && _scrollTop + $(e.currentTarget).height() < (e as any).target.scrollHeight)
-			e.stopPropagation();
 	}
 
 	public onInitialize (): void {
@@ -240,8 +236,6 @@ export class Comment extends CanvasSectionObject {
 		var isRTL = document.documentElement.dir === 'rtl';
 		this.sectionProperties.container = L.DomUtil.create('div', 'cool-annotation' + (isRTL ? ' rtl' : ''));
 		this.sectionProperties.container.id = 'comment-container-' + this.sectionProperties.data.id;
-		this.sectionProperties.container.addEventListener('focusin', this.onContainerGotFocus.bind(this));
-		this.sectionProperties.container.addEventListener('focusout', this.onContainerLostFocus.bind(this));
 
 		var mobileClass = (<any>window).mode.isMobile() ? ' wizard-comment-box': '';
 
@@ -259,14 +253,6 @@ export class Comment extends CanvasSectionObject {
 		// We make comment directly visible when its transitioned to its determined position
 		if (cool.CommentSection.autoSavedComment)
 			this.sectionProperties.container.style.visibility = 'hidden';
-	}
-
-	private onContainerGotFocus() {
-		app.view.commentHasFocus = true;
-	}
-
-	private onContainerLostFocus() {
-		app.view.commentHasFocus = false;
 	}
 
 	private createAuthorTable (): void {
@@ -404,12 +390,24 @@ export class Comment extends CanvasSectionObject {
 		this.sectionProperties.resolvedTextElement.innerText = state === 'true' ? _('Resolved') : '';
 	}
 
-	private textAreaInput (ev: any): void {
+	private isNewPara(): boolean {
+		const selection = window.getSelection();
+		if (!selection.rangeCount) return;
+
+		const range = selection.getRangeAt(0);
+		const cursorPosition = range.startOffset;
+		const node = range.startContainer;
+
+		const beforeCursor = node.textContent.slice(0, cursorPosition);
+		return /^\s*$/.test(beforeCursor.slice(0, -1));
+	}
+
+	private textAreaInput(ev: any): void {
 		this.sectionProperties.autoSave.innerText = '';
 
 		if (ev && this.sectionProperties.docLayer._docType === 'text') {
 			// special handling for mentions
-			this.map.mention.handleMentionInput(ev);
+			this.map?.mention.handleMentionInput(ev, this.isNewPara());
 		}
 	}
 
@@ -423,6 +421,13 @@ export class Comment extends CanvasSectionObject {
 	}
 
 	private textAreaKeyDown (ev: any): void {
+		if (ev && ev.ctrlKey && ev.key === "Enter") {
+			ev.preventDefault();
+			this.map.mention?.closeMentionPopup(false);
+			this.onSaveComment(ev);
+			return;
+		}
+
 		this.handleKeyDownForPopup(ev, 'mentionPopup');
 	}
 
@@ -1069,7 +1074,7 @@ export class Comment extends CanvasSectionObject {
 		this.sectionProperties.commentListSection.save(this);
 	}
 
-	// for somereasone firefox adds <br> at of the end of text in contenteditable div
+	// for some reason firefox adds <br> at of the end of text in contenteditable div
 	// there have been similar reports: https://bugzilla.mozilla.org/show_bug.cgi?id=1615852
 	private removeBRTag(element: HTMLElement) {
 		if (!L.Browser.gecko)
@@ -1104,7 +1109,6 @@ export class Comment extends CanvasSectionObject {
 				}
 			}
 		}
-		app.view.commentHasFocus = false;
 	}
 
 	// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
@@ -1172,6 +1176,16 @@ export class Comment extends CanvasSectionObject {
 					return commentList[i];
 		}
 		return null;
+	}
+
+	public static isAnyFocus(): boolean {
+		const comment_: Comment = Comment.isAnyEdit();
+
+		// We have a comment in edit mode. Is it focused?
+		if (comment_ && (document.activeElement === comment_.sectionProperties.nodeModifyText || document.activeElement === comment_.sectionProperties.nodeReplyText))
+			return true;
+
+		return false;
 	}
 
 	// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
@@ -1323,13 +1337,18 @@ export class Comment extends CanvasSectionObject {
 				if (cellSize[0] !== 0 && cellSize[1] !== 0) { // don't draw notes in hidden cells
 					// For calc comments (aka postits) draw the same sort of square as ScOutputData::DrawNoteMarks
 					// does for offline
-					var margin = 3;
+					var margin = cellSize[0] * 0.06;
 					var squareDim = 6;
 					// this.size may currently have an artifically wide size if mouseEnter without moveLeave seen
 					// so fetch the real size
 					var x = this.isCalcRTL() ? margin : cellSize[0] - (margin + squareDim);
-					this.context.fillStyle = '#FF0000';
-					this.context.fillRect(x, 0, squareDim, squareDim);
+					this.context.fillStyle = '#BF819E';
+					var region = new Path2D();
+					region.moveTo(x, 0);
+					region.lineTo(cellSize[0], 0);
+					region.lineTo(cellSize[0], cellSize[1]/2);
+					region.closePath();
+					this.context.fill(region);
 				}
 			}
 		}
@@ -1517,14 +1536,18 @@ export class Comment extends CanvasSectionObject {
 		if (this.sectionProperties.docLayer._docType === 'spreadsheet')
 			return;
 
+		var innerText;
 		if (this.isEdit())
-			this.sectionProperties.collapsedInfoNode.innerText = '!';
+			innerText = '!';
 		else if (replycount === '!' || typeof replycount === "number" && replycount > 0)
-			this.sectionProperties.collapsedInfoNode.innerText = replycount;
+			innerText = replycount;
 		else
-			this.sectionProperties.collapsedInfoNode.innerText = '';
+			innerText = '';
 
-		if (this.sectionProperties.collapsedInfoNode.innerText === '' || this.isContainerVisible())
+		if (this.sectionProperties.collapsedInfoNode.innerText != innerText)
+			this.sectionProperties.collapsedInfoNode.innerText = innerText;
+
+		if (innerText === '' || this.isContainerVisible())
 			this.sectionProperties.collapsedInfoNode.style.display = 'none';
 		else if ((!this.isContainerVisible() && this.sectionProperties.collapsedInfoNode.innerText !== ''))
 			this.sectionProperties.collapsedInfoNode.style.display = '';
@@ -1569,11 +1592,13 @@ export class Comment extends CanvasSectionObject {
 			container.parentNode?.insertBefore(hyperlink, container.nextSibling);
 
 			const afterTextNode = document.createTextNode(afterMention);
-			hyperlink.parentNode?.insertBefore(afterTextNode, hyperlink.nextSibling);
+			const extraSpaceNode = document.createTextNode('\u00A0');
+			hyperlink.parentNode?.insertBefore(extraSpaceNode, hyperlink.nextSibling);
+			hyperlink.parentNode?.insertBefore(afterTextNode, extraSpaceNode.nextSibling);
 
 			const newRange = document.createRange();
-			newRange.setStartAfter(hyperlink);
-			newRange.setEndAfter(hyperlink);
+			newRange.setStartAfter(extraSpaceNode);
+			newRange.setEndAfter(extraSpaceNode);
 
 			selection.removeAllRanges();
 			selection.addRange(newRange);

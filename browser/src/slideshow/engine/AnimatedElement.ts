@@ -72,6 +72,21 @@ namespace PropertyOperators {
 			return r;
 		},
 	};
+	const ColorPropOpSet = {
+		equal: (a: any, b: any): boolean => {
+			return a.equal(b);
+		},
+		add: (a: any, b: any): any => {
+			const c = a.clone();
+			c.add(b);
+			return c;
+		},
+		scale: (k: number, v: any): any => {
+			const c = v.clone();
+			c.scale(k);
+			return c;
+		},
+	};
 
 	export type PropOpSet = typeof GenericPropOpSet;
 	export type PropertyOperatorsMap = Map<PropertyValueType, PropOpSet>;
@@ -81,6 +96,7 @@ namespace PropertyOperators {
 	aOperatorSetMap.set(PropertyValueType.String, GenericPropOpSet);
 	aOperatorSetMap.set(PropertyValueType.Bool, GenericPropOpSet);
 	aOperatorSetMap.set(PropertyValueType.TupleNumber, TupleNumberPropOpSet);
+	aOperatorSetMap.set(PropertyValueType.Color, ColorPropOpSet);
 }
 
 type PropertyOperatorSet = PropertyOperators.PropOpSet;
@@ -90,45 +106,50 @@ const aOperatorSetMap = PropertyOperators.aOperatorSetMap;
 type PropertyInterpolatorType = (nFrom: any, nTo: any, nT: number) => any;
 
 namespace PropertyInterpolator {
-	const aLinearLerpFunctor = new Map([
-		[
-			PropertyValueType.Number,
-			(nFrom: any, nTo: any, nT: number): any => {
-				return (1.0 - nT) * nFrom + nT * nTo;
-			},
-		],
-		[
-			PropertyValueType.TupleNumber,
-			(aFrom: any, aTo: any, nT: number): any => {
-				const aRes = [];
-				for (let i = 0; i < aFrom.length; ++i) {
-					aRes.push((1.0 - nT) * aFrom[i] + nT * aTo[i]);
-				}
-				return aRes as any;
-			},
-		],
-	]);
-
-	type LerpFunctorMap = Map<CalcMode, typeof aLinearLerpFunctor>;
-	const aLerpFunctorMap: LerpFunctorMap = new Map();
-	aLerpFunctorMap.set(CalcMode.Linear, aLinearLerpFunctor);
-
 	export function getInterpolator(
-		eCalcMode: CalcMode,
 		eValueType: PropertyValueType,
+		eValueSubType?: ColorSpace,
+		eClockDirection?: ClockDirection,
 	): PropertyInterpolatorType {
-		if (
-			aLerpFunctorMap.has(eCalcMode) &&
-			aLerpFunctorMap.get(eCalcMode).has(eValueType)
-		) {
-			return aLerpFunctorMap.get(eCalcMode).get(eValueType);
+		switch (eValueType) {
+			case PropertyValueType.Number:
+				return (nFrom: any, nTo: any, nT: number): any => {
+					return (1.0 - nT) * nFrom + nT * nTo;
+				};
+			case PropertyValueType.TupleNumber:
+				return (aFrom: any, aTo: any, nT: number): any => {
+					const aRes = [];
+					for (let i = 0; i < aFrom.length; ++i) {
+						aRes.push((1.0 - nT) * aFrom[i] + nT * aTo[i]);
+					}
+					return aRes as any;
+				};
+			case PropertyValueType.Color:
+				if (eValueSubType !== undefined) {
+					switch (eValueSubType) {
+						case ColorSpace.rgb:
+							return (nFrom: any, nTo: any, nT: number): any => {
+								return RGBColor.interpolate(nFrom, nTo, nT);
+							};
+						case ColorSpace.hsl: {
+							const bCCW = eClockDirection == ClockDirection.counterClockwise;
+							return (nFrom: any, nTo: any, nT: number): any => {
+								return HSLColor.interpolate(nFrom, nTo, nT, bCCW);
+							};
+						}
+					}
+				} else {
+					window.app.console.log(
+						'PropertyInterpolator.getInterpolator: color space not defined.',
+					);
+				}
+				break;
+			default:
+				window.app.console.log(
+					'PropertyInterpolator.getInterpolator: not found any valid interpolator for value type ' +
+						PropertyValueType[eValueType],
+				);
 		}
-		window.app.console.log(
-			'aInterpolatorHandler.getInterpolator: not found any valid interpolator for calc mode ' +
-				CalcMode[eCalcMode] +
-				' and value type ' +
-				PropertyValueType[eValueType],
-		);
 		return null;
 	}
 }
@@ -215,6 +236,42 @@ const aPropertyGetterSetterMap = {
 		get: 'getVisibility',
 		set: 'setVisibility',
 	},
+
+	fillstyle: {
+		type: PropertyValueType.String,
+		get: 'getFillStyle',
+		set: 'setFillStyle',
+	},
+
+	linestyle: {
+		type: PropertyValueType.String,
+		get: 'getLineStyle',
+		set: 'setLineStyle',
+	},
+
+	fillcolor: {
+		type: PropertyValueType.Color,
+		get: 'getFillColor',
+		set: 'setFillColor',
+	},
+
+	linecolor: {
+		type: PropertyValueType.Color,
+		get: 'getStrokeColor',
+		set: 'setStrokeColor',
+	},
+
+	charcolor: {
+		type: PropertyValueType.Color,
+		get: 'getFontColor',
+		set: 'setFontColor',
+	},
+
+	dimcolor: {
+		type: PropertyValueType.Color,
+		get: 'getDimColor',
+		set: 'setDimColor',
+	},
 };
 
 type PropertyGetterSetterMapKeyType = keyof typeof aPropertyGetterSetterMap;
@@ -257,14 +314,14 @@ class TransitionFiltersManager {
 		this.filterQueue.push(nodeId);
 	}
 
-	public apply(): boolean {
+	public apply(properties?: AnimatedElementRenderProperties): boolean {
 		let applied = false;
 		this.filterQueue.forEach((nodeId) => {
 			const frameInfo = this.frameInfoMap.get(nodeId);
 			if (frameInfo) {
 				applied = true;
 				ANIMDBG.print(`TransitionFiltersManager.apply: node: ${nodeId}`);
-				frameInfo.animation.renderFrame(frameInfo.time);
+				frameInfo.animation.renderFrame(frameInfo.time, properties);
 			}
 		});
 		return applied;
@@ -301,15 +358,25 @@ interface AnimatedElementState {
 	nSkewY: number;
 	aTMatrix: DOMMatrix;
 	nOpacity: number;
+	aFillColor: RGBColor;
+	aLineColor: RGBColor;
+	aFontColor: RGBColor;
 	bVisible: boolean;
 	transitionFiltersState: TransitionFiltersState;
 }
 
 type BoundsType = [DOMPoint, DOMPoint, DOMPoint, DOMPoint];
 
+interface AnimatedElementColorMap {
+	fromFillColor?: RGBColor;
+	toFillColor?: RGBColor;
+	fromLineColor?: RGBColor;
+	toLineColor?: RGBColor;
+}
 interface AnimatedElementRenderProperties {
 	bounds: BoundsType;
 	alpha: number;
+	colorMap?: AnimatedElementColorMap;
 }
 
 function BBoxToString(aBB: BoundingBoxType) {
@@ -317,6 +384,8 @@ function BBoxToString(aBB: BoundingBoxType) {
 }
 
 class AnimatedElement {
+	public static readonly DefaultColor = new RGBColor(0, 0, 0);
+
 	public static readonly SupportedProperties = new Set<string>([
 		'x',
 		'y',
@@ -327,6 +396,12 @@ class AnimatedElement {
 		'rotate',
 		'skewx',
 		'skewy',
+		'fillstyle',
+		'linestyle',
+		'fillcolor',
+		'linecolor',
+		'charcolor',
+		'dimcolor',
 	]);
 
 	public static readonly SupportedTransformations = new Set<string>([
@@ -334,8 +409,6 @@ class AnimatedElement {
 		'scale',
 		'rotate',
 	]);
-
-	public static readonly SupportedTransitionFilters = new Set<string>(['Fade']);
 
 	private sId: string;
 	private slideHash: string;
@@ -357,6 +430,7 @@ class AnimatedElement {
 	private aActiveElement: AnimatedObjectType;
 	private eAdditiveMode = AdditiveMode.Replace;
 	private aStateSet = new Map<number, AnimatedElementState>();
+	private aStateOnNextEffectSet = new Map<number, AnimatedElementState>();
 	private nCenterX: number;
 	private nCenterY: number;
 	private nScaleFactorX: number = 1.0;
@@ -366,19 +440,24 @@ class AnimatedElement {
 	private nSkewY: number = 0;
 	private aTMatrix: DOMMatrix;
 	private nOpacity: number; // [0, 1]
+	private aBaseFillColor = AnimatedElement.DefaultColor;
+	private aFillColor = AnimatedElement.DefaultColor;
+	private aBaseLineColor = AnimatedElement.DefaultColor;
+	private aLineColor = AnimatedElement.DefaultColor;
+	private aBaseFontColor = AnimatedElement.DefaultColor;
+	private aFontColor = AnimatedElement.DefaultColor;
+	private aDimColor = AnimatedElement.DefaultColor;
 	private bVisible: boolean;
 	private aClipPath: SVGPathElement = null;
-	private offscreenCanvas: OffscreenCanvas;
-	private canvasContext: OffscreenCanvasRenderingContext2D;
 	private runningAnimations: number = 0;
 
-	private aSlideShowContext: SlideShowContext;
-	private aPreviousElement: AnimatedObjectType = null;
-	private bIsUpdated = true;
+	private nCurrentEffect: number;
+	// effect -> animation nodes
+	private activeAnimationNodes = new Map<number, Set<number>>();
 
-	private tfCanvas: OffscreenCanvas;
 	private tfContext: RenderContextGl;
 	private transitionFiltersManager: TransitionFiltersManager;
+	private aSlideShowContext: SlideShowContext;
 
 	constructor(
 		sId: string,
@@ -409,6 +488,10 @@ class AnimatedElement {
 
 	private isGlSupported() {
 		return !this.tfContext.is2dGl();
+	}
+
+	public isTextElement() {
+		return false;
 	}
 
 	private cloneBBox(aBBox: BoundingBoxType): BoundingBoxType {
@@ -454,13 +537,6 @@ class AnimatedElement {
 		console.debug(
 			`AnimatedElement.updateCanvasSize: (${this.canvasWidth}x${this.canvasHeight}), scale factor: ${this.canvasScaleFactor}`,
 		);
-
-		// init offset canvas
-		this.offscreenCanvas = new OffscreenCanvas(
-			this.canvasWidth,
-			this.canvasHeight,
-		);
-		this.canvasContext = this.offscreenCanvas.getContext('2d');
 	}
 
 	public updateAnimationInfo(animatedLayerInfo: AnimatedShapeInfo) {
@@ -488,6 +564,22 @@ class AnimatedElement {
 		this.aBBoxInCanvas = convert(this.canvasScaleFactor, this.aBaseBBox);
 		this.aBaseElement = this.createBaseElement(this.aLayer, this.aBBoxInCanvas);
 
+		if (this.animatedLayerInfo.fillColor) {
+			this.aBaseFillColor = colorParser(
+				this.animatedLayerInfo.fillColor,
+			) as RGBColor;
+		}
+		if (this.animatedLayerInfo.lineColor) {
+			this.aBaseLineColor = colorParser(
+				this.animatedLayerInfo.lineColor,
+			) as RGBColor;
+		}
+		if (this.animatedLayerInfo.fontColor) {
+			this.aBaseFontColor = colorParser(
+				this.animatedLayerInfo.fontColor,
+			) as RGBColor;
+		}
+
 		this.DBG(
 			'.updateAnimationInfo: ' +
 				`\n  aBaseBBox: ${BBoxToString(this.aBaseBBox)}` +
@@ -503,7 +595,23 @@ class AnimatedElement {
 	}
 
 	public setTransitionParameters(transitionParameters: TransitionParameters) {
-		this.createTFGLContext();
+		if (!this.tfContext) {
+			const layerCompositor = this.getLayerCompositor();
+			if (!layerCompositor) {
+				window.app.console.error(
+					'AnimatedElement.setTransitionParameters: layer compositor is undefined',
+				);
+				return;
+			}
+			this.tfContext = layerCompositor.getLayerRendererContext();
+			if (!this.tfContext) {
+				window.app.console.error(
+					'AnimatedElement.setTransitionParameters: layer renderer context is undefined',
+				);
+				return;
+			}
+		}
+
 		transitionParameters.context = this.tfContext;
 		transitionParameters.current = null;
 		transitionParameters.next = this.getTextureFromElement(this.aBaseElement);
@@ -519,6 +627,9 @@ class AnimatedElement {
 		this.nSkewY = 0.0;
 		this.aTMatrix = new DOMMatrix([1, 0, 0, 1, 0, 0]);
 		this.nOpacity = 1;
+		this.aFillColor = this.aBaseFillColor;
+		this.aLineColor = this.aBaseLineColor;
+		this.aFontColor = this.aBaseFontColor;
 		this.bVisible = this.animatedLayerInfo
 			? this.animatedLayerInfo.initVisible
 			: false;
@@ -550,35 +661,40 @@ class AnimatedElement {
 		this.aClipPath = null;
 	}
 
-	// TODO unused, to be removed (?)
-	private getAnimatedLayerInfo(): AnimatedShapeInfo {
-		ANIMDBG.print('AnimatedElement.getAnimatedLayerInfo');
+	private getLayerCompositor(): SlideCompositor {
 		const presenter: SlideShowPresenter = app.map.slideShowPresenter;
 		if (presenter) {
-			const compositor = presenter._slideCompositor;
-			if (compositor) {
-				return compositor.getAnimatedLayerInfo(this.slideHash, this.sId);
-			}
+			return presenter._slideCompositor;
 		}
 		return null;
 	}
 
-	applyTransitionFilters(): boolean {
+	applyTransitionFilters(
+		properties?: AnimatedElementRenderProperties,
+	): boolean {
 		if (this.transitionFiltersManager.isEmpty() || !this.isGlSupported()) {
 			return false;
 		}
-		return this.transitionFiltersManager.apply();
+		return this.transitionFiltersManager.apply(properties);
 	}
 
-	updateLayer(renderingContext: OffscreenCanvasRenderingContext2D) {
-		const applied = this.applyTransitionFilters();
+	renderLayer(renderer: LayerRenderer) {
+		if (!this.bVisible) return;
+		if (renderer instanceof LayerRendererGl) this.renderLayerGl(renderer);
+		else if (renderer instanceof LayerRenderer2d) this.renderLayer2d(renderer);
+	}
+
+	renderLayer2d(renderer: LayerRenderer2d) {
+		if (renderer.isDisposed()) return;
+
+		const renderContext = renderer.getRenderContext();
+		const renderingContext = renderContext.get2dOffscreen();
 
 		renderingContext.save();
+		// renderingContext.scale(sf.x, sf.y);
 
 		// factor to convert from slide coordinate to canvas coordinate
 		const sf = this.canvasScaleFactor;
-
-		// renderingContext.scale(sf.x, sf.y);
 
 		renderingContext.globalAlpha = this.nOpacity;
 
@@ -593,11 +709,9 @@ class AnimatedElement {
 		]);
 		renderingContext.setTransform(transform);
 
-		const aElement = applied
-			? this.tfCanvas.transferToImageBitmap()
-			: this.aBaseElement;
+		const aElement = this.aBaseElement;
 		console.debug(
-			`AnimatedElement(${this.sId}).updateLayer:
+			`AnimatedElement(${this.sId}).renderLayer2d:
 				element width: ${aElement.width}
 				element height: ${aElement.height}
 				base center: (${this.nBaseCenterX}, ${this.nBaseCenterY})
@@ -631,19 +745,15 @@ class AnimatedElement {
 		renderingContext.restore();
 	}
 
-	renderLayer(renderer: LayerRenderer) {
-		if (!this.bVisible) return;
-		const applied = this.applyTransitionFilters();
+	renderLayerGl(renderer: LayerRendererGl) {
+		if (renderer.isDisposed()) return;
 
 		const T = this.aTMatrix;
 
-		const aElement = applied
-			? this.tfCanvas.transferToImageBitmap()
-			: this.aBaseElement;
 		console.debug(
-			`AnimatedElement(${this.sId}).renderLayer:
-				element width: ${aElement.width}
-				element height: ${aElement.height}
+			`AnimatedElement(${this.sId}).renderLayerGl:
+				element width: ${this.aBaseElement.width}
+				element height: ${this.aBaseElement.height}
 				base center: (${this.nBaseCenterX}, ${this.nBaseCenterY})
 				actual center: (${this.nCenterX}, ${this.nCenterY})
 				transform: ${T.toString()}`,
@@ -665,30 +775,39 @@ class AnimatedElement {
 			unitBounds.push(u);
 		}
 
+		// This color mapping solution doesn't work if fill and line colors have
+		// the same initial value. For a proper solution we would need separated
+		// layers for stroke and fill, at least when a color animation is involved.
+		const colorMap: AnimatedElementColorMap = {};
+		if (this.isTextElement()) {
+			// On desktop, fill and line color animations seem to have no effect
+			// when applied to a paragraph, so here we take into account font color
+			// changes only, and we forward them to the renderer as a fill color map,
+			// so that we can avoid to perform a further color comparison
+			// in the fragment shader.
+			if (!this.aFontColor.equal(this.aBaseFontColor)) {
+				colorMap.fromFillColor = this.aBaseFontColor;
+				colorMap.toFillColor = this.aFontColor;
+			}
+		} else if (
+			!this.aFillColor.equal(this.aBaseFillColor) ||
+			!this.aLineColor.equal(this.aBaseLineColor)
+		) {
+			colorMap.fromFillColor = this.aBaseFillColor;
+			colorMap.toFillColor = this.aFillColor;
+			colorMap.fromLineColor = this.aBaseLineColor;
+			colorMap.toLineColor = this.aLineColor;
+		}
+
 		const properties: AnimatedElementRenderProperties = {
 			bounds: unitBounds as BoundsType,
 			alpha: this.nOpacity,
+			colorMap: colorMap,
 		};
 
-		renderer.drawBitmap(aElement, properties);
-	}
+		if (this.applyTransitionFilters(properties)) return;
 
-	private update() {
-		if (!this.bVisible) return;
-		this.canvasContext.clearRect(
-			0,
-			0,
-			this.offscreenCanvas.width,
-			this.offscreenCanvas.height,
-		);
-		this.updateLayer(this.canvasContext);
-		this.aActiveElement = this.offscreenCanvas.transferToImageBitmap();
-	}
-
-	public getAnimatedLayer() {
-		ANIMDBG.print(`AnimatedElement(${this.getId()}).getAnimatedLayer`);
-		this.update();
-		return this.bVisible ? this.aActiveElement : null;
+		renderer.drawBitmap(this.aBaseElement, properties);
 	}
 
 	notifySlideStart(aSlideShowContext: SlideShowContext) {
@@ -698,7 +817,18 @@ class AnimatedElement {
 			);
 		}
 		this.aSlideShowContext = aSlideShowContext;
+
 		this.runningAnimations = 0;
+		this.activeAnimationNodes.clear();
+		this.nCurrentEffect = undefined;
+		this.aStateOnNextEffectSet.clear();
+
+		const aAnimatedLayerInfo =
+			this.aSlideShowContext.aSlideShowHandler.getAnimatedLayerInfo(
+				this.slideHash,
+				this.sId,
+			);
+		this.updateAnimationInfo(aAnimatedLayerInfo);
 
 		// this.aActiveElement = this.clone(this.aBaseElement);
 
@@ -708,7 +838,6 @@ class AnimatedElement {
 
 	notifySlideEnd() {
 		this.transitionFiltersManager.clear();
-		this.deleteTFGLContext();
 	}
 
 	notifyAnimationStart() {
@@ -735,34 +864,9 @@ class AnimatedElement {
 		}
 	}
 
-	notifyNextEffectStart(nEffectIndex?: number) {
-		// empty body
-	}
-
-	private createTFGLContext() {
-		if (!this.tfCanvas) {
-			this.DBG('.createTFGLContext: canvas');
-			this.tfCanvas = new OffscreenCanvas(
-				this.aBaseElement.width,
-				this.aBaseElement.height,
-			);
-		}
-
-		if (!this.tfContext) {
-			this.DBG('.createTFGLContext: context');
-			this.tfContext = new RenderContextGl(this.tfCanvas);
-			if (!this.tfContext) {
-				this.tfContext = new RenderContext2d(this.tfCanvas);
-			}
-		}
-	}
-
-	private deleteTFGLContext() {
-		if (this.tfContext) {
-			this.DBG('.deleteTFGLContext');
-			this.tfContext = null;
-			this.tfCanvas = null;
-		}
+	notifyNextEffectStart(nEffectIndex: number) {
+		this.nCurrentEffect = nEffectIndex;
+		this.activeAnimationNodes.set(this.nCurrentEffect, new Set());
 	}
 
 	// TODO remove it
@@ -805,10 +909,29 @@ class AnimatedElement {
 			nSkewY: this.nSkewY,
 			aTMatrix: DOMMatrix.fromMatrix(this.aTMatrix),
 			nOpacity: this.nOpacity,
+			aFillColor: this.aFillColor,
+			aLineColor: this.aLineColor,
+			aFontColor: this.aFontColor,
 			bVisible: this.bVisible,
 			transitionFiltersState: this.transitionFiltersManager.getState(),
 		};
 		this.aStateSet.set(nAnimationNodeId, aState);
+
+		// if it's the first animation for current effect set as the state
+		// on effect started
+		const currentEffectNodes = this.activeAnimationNodes.get(
+			this.nCurrentEffect,
+		);
+		if (currentEffectNodes) {
+			currentEffectNodes.add(nAnimationNodeId);
+			if (currentEffectNodes.size === 1)
+				this.aStateOnNextEffectSet.set(this.nCurrentEffect, aState);
+		} else {
+			window.app.console.log(
+				`AnimatedElement(${this.getId()}).saveState(${nAnimationNodeId}): ` +
+					`current effect not found: ${this.nCurrentEffect}`,
+			);
+		}
 	}
 
 	/** restoreState
@@ -841,7 +964,23 @@ class AnimatedElement {
 				')',
 		);
 
-		const aState = this.aStateSet.get(nAnimationNodeId);
+		let aState = this.aStateSet.get(nAnimationNodeId);
+
+		this.activeAnimationNodes.forEach((nodes, effect, map) => {
+			if (nodes.has(nAnimationNodeId)) {
+				nodes.delete(nAnimationNodeId);
+				// if an effect has been completely removed restore the state saved
+				// when effect started
+				if (nodes.size === 0) {
+					map.delete(effect);
+					const state = this.aStateOnNextEffectSet.get(effect);
+					if (state) aState = state;
+					this.aStateOnNextEffectSet.delete(effect);
+				}
+				return;
+			}
+		});
+
 		const bRet = true;
 		if (bRet) {
 			this.nCenterX = aState.nCenterX;
@@ -851,11 +990,16 @@ class AnimatedElement {
 			this.nRotationAngle = aState.nRotationAngle;
 			this.nSkewX = aState.nSkewX;
 			this.nSkewY = aState.nSkewY;
-			this.aTMatrix = aState.aTMatrix;
+			this.aTMatrix = DOMMatrix.fromMatrix(aState.aTMatrix);
 			this.nOpacity = aState.nOpacity;
+			this.aFillColor = aState.aFillColor;
+			this.aLineColor = aState.aLineColor;
+			this.aFontColor = aState.aFontColor;
 			this.bVisible = aState.bVisible;
 			this.transitionFiltersManager.setState(aState.transitionFiltersState);
 		}
+		this.aStateSet.delete(nAnimationNodeId);
+
 		// we need to trigger at least one request animation frame for SlideRenderer.render method
 		// maybe we could implement a SlideRenderer.oneShot method.
 		this.notifyAnimationStart();
@@ -931,16 +1075,16 @@ class AnimatedElement {
 		ANIMDBG.print('AnimatedElement.setX(' + nNewCenterX + ')');
 		if (nNewCenterX === this.nCenterX) return;
 
-		this.aTMatrix.translateSelf(nNewCenterX - this.nCenterX, 0);
 		this.nCenterX = nNewCenterX;
+		this.updateTransformationMatrix();
 	}
 
 	setY(nNewCenterY: number) {
 		ANIMDBG.print('AnimatedElement.setY(' + nNewCenterY + ')');
 		if (nNewCenterY === this.nCenterY) return;
 
-		this.aTMatrix.translateSelf(0, nNewCenterY - this.nCenterY);
 		this.nCenterY = nNewCenterY;
+		this.updateTransformationMatrix();
 	}
 
 	setPos(aNewPos: [number, number]) {
@@ -952,12 +1096,9 @@ class AnimatedElement {
 
 		if (nNewCenterX === this.nCenterX && nNewCenterY === this.nCenterY) return;
 
-		this.aTMatrix.translateSelf(
-			nNewCenterX - this.nCenterX,
-			nNewCenterY - this.nCenterY,
-		);
 		this.nCenterX = nNewCenterX;
 		this.nCenterY = nNewCenterY;
+		this.updateTransformationMatrix();
 	}
 
 	setWidth(nNewWidth: number) {
@@ -1064,25 +1205,78 @@ class AnimatedElement {
 		console.debug('AnimatedElement.setVisibility(' + sValue + ')');
 	}
 
-	getFillColor(): any {
-		window.app.console.log('AnimatedElement.getFillColor() not implemented');
-		return null;
+	getFillColor(): RGBColor {
+		return this.aFillColor;
 	}
 
-	setFillColor(aRGBValue: any) {
+	setFillColor(aRGBValue: RGBColor) {
 		window.app.console.log(
-			'AnimatedElement.setFillColor(' + aRGBValue + ') not implemented',
+			'AnimatedElement.setFillColor(' + aRGBValue.toString() + ')',
+		);
+		this.aFillColor = aRGBValue;
+	}
+
+	getStrokeColor(): RGBColor {
+		return this.aLineColor;
+	}
+
+	setStrokeColor(aRGBValue: RGBColor) {
+		window.app.console.log(
+			'AnimatedElement.setStrokeColor(' + aRGBValue.toString() + ')',
+		);
+		this.aLineColor = aRGBValue;
+	}
+
+	getFontColor(): RGBColor {
+		return this.aFontColor;
+	}
+
+	setFontColor(aRGBValue: RGBColor) {
+		window.app.console.log(
+			'AnimatedElement.setFontColor(' + aRGBValue.toString() + ')',
+		);
+		this.aFontColor = aRGBValue;
+	}
+
+	setDefaultDimColor(aRGBValue: RGBColor) {
+		window.app.console.log(
+			'AnimatedElement.setDefaultDimColor(' + aRGBValue.toString() + ')',
+		);
+
+		this.aDimColor = aRGBValue;
+	}
+
+	getDimColor(): RGBColor {
+		return this.aDimColor;
+	}
+
+	setDimColor(aRGBValue: RGBColor) {
+		window.app.console.log(
+			'AnimatedElement.setDimColor(' + aRGBValue.toString() + ')',
+		);
+		this.aDimColor = aRGBValue;
+		this.aLineColor = aRGBValue;
+		this.aFillColor = aRGBValue;
+		this.aFontColor = aRGBValue;
+	}
+
+	getFillStyle(): string {
+		return 'solid';
+	}
+
+	setFillStyle(sValue: string) {
+		window.app.console.log(
+			'AnimatedElement.setFillStyle(' + sValue + ') not implemented',
 		);
 	}
 
-	getStrokeColor(): any {
-		window.app.console.log('AnimatedElement.getStrokeColor() not implemented');
-		return null;
+	getLineStyle(): string {
+		return 'solid';
 	}
 
-	setStrokeColor(aRGBValue: any) {
+	setLineStyle(sValue: string) {
 		window.app.console.log(
-			'AnimatedElement.setStrokeColor(' + aRGBValue + ') not implemented',
+			'AnimatedElement.setLineStyle(' + sValue + ') not implemented',
 		);
 	}
 
@@ -1115,5 +1309,8 @@ class AnimatedElement {
 }
 
 class AnimatedTextElement extends AnimatedElement {
+	public isTextElement() {
+		return true;
+	}
 	// TODO: to be implemented
 }

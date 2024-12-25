@@ -24,7 +24,7 @@
 namespace FileUtil
 {
     /// Used for anonymizing URLs
-    void setUrlAnonymization(bool anonymize, const std::uint64_t salt);
+    void setUrlAnonymization(bool anonymize, std::uint64_t salt);
 
     /// Anonymize the basename of filenames, preserving the path and extension.
     std::string anonymizeUrl(const std::string& url);
@@ -56,7 +56,7 @@ namespace FileUtil
     // Perform the check. If the free space on any of the registered file systems is below 5%, call
     // 'alertAllUsers("internal", "diskfull")'. The check will be made no more often than once a
     // minute if cacheLastCheck is set to true.
-    std::string checkDiskSpaceOnRegisteredFileSystems(const bool cacheLastCheck = true);
+    std::string checkDiskSpaceOnRegisteredFileSystems(bool cacheLastCheck = true);
 
     // Check disk space on a specific file system, the one where 'path' is located. This does not
     // add that file system to the list used by 'registerFileSystemForDiskSpaceChecks'. If the free
@@ -68,7 +68,7 @@ namespace FileUtil
     /// Suppresses exception when the file is already removed.
     /// This can happen when there is a race (unavoidable) or when
     /// we don't care to check before we remove (when no race exists).
-    void removeFile(const std::string& path, const bool recursive = false);
+    void removeFile(const std::string& path, bool recursive = false);
 
     inline void removeFile(const Poco::Path& path, const bool recursive = false)
     {
@@ -192,13 +192,12 @@ namespace FileUtil
             : _path(file)
             , _sb{}
             , _res(link ? lstat(file.c_str(), &_sb) : stat(file.c_str(), &_sb))
-            , _errno(errno)
+            , _stat_errno(errno)
         {
         }
 
         bool good() const { return _res == 0; }
         bool bad() const { return !good(); }
-        bool erno() const { return _errno; }
         const struct ::stat& sb() const { return _sb; }
 
         const std::string path() const { return _path; }
@@ -251,7 +250,7 @@ namespace FileUtil
         }
 
         /// Returns true iff the path exists, regardless of access permission.
-        bool exists() const { return good() || (_errno != ENOENT && _errno != ENOTDIR); }
+        bool exists() const { return good() || (_stat_errno != ENOENT && _stat_errno != ENOTDIR); }
 
         /// Returns true if both files exist and have
         /// the same size and same contents.
@@ -291,10 +290,10 @@ namespace FileUtil
         const std::string _path;
         struct ::stat _sb;
         const int _res;
-        const int _errno;
+        const int _stat_errno;
     };
 
-    std::vector<std::string> getDirEntries(const std::string dirPath);
+    std::vector<std::string> getDirEntries(std::string dirPath);
 
     void lslr(const std::string& dir);
 

@@ -15,7 +15,7 @@
 #include "TraceEvent.hpp"
 #include "Util.hpp"
 
-#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <cctype>
@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <string>
 #include <unistd.h>
+#include <sysexits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -56,30 +57,22 @@
 #include <Log.hpp>
 #include <Watchdog.hpp>
 #include <wasm/base64.hpp>
+#include <common/ConfigUtil.hpp>
+#include <common/Unit.hpp>
+
+// Bug in pre C++17 where static constexpr must be defined. Fixed in C++17.
+constexpr std::chrono::microseconds SocketPoll::DefaultPollTimeoutMicroS;
+constexpr std::chrono::microseconds WebSocketHandler::InitialPingDelayMicroS;
 
 std::atomic<bool> SocketPoll::InhibitThreadChecks(false);
 std::atomic<bool> Socket::InhibitThreadChecks(false);
 
 std::unique_ptr<Watchdog> SocketPoll::PollWatchdog;
 
-std::mutex SocketPoll::StatsMutex;
-std::atomic<size_t> SocketPoll::StatsConnectionCount(0);
+std::atomic<size_t> StreamSocket::ExternalConnectionCount = 0;
 
-size_t SocketPoll::StatsConnectionMod(size_t added, size_t removed) {
-    if( added == 0 && removed == 0 ) {
-        return GetStatsConnectionCount();
-    }
-    size_t res, pre;
-    {
-        std::lock_guard<std::mutex> lock(StatsMutex);
-        pre = GetStatsConnectionCount();
-        res = pre + added; // overflow impossible due to MAX_CONNECTIONS
-        res -= removed; // underflow impossible due to MAX_CONNECTIONS
-        StatsConnectionCount.store(res, std::memory_order_seq_cst);
-    }
-    LOG_DBG("SocketPoll::ConnectionCount: " << pre << " +" << added << " -" << removed << " = " << res);
-    return res;
-}
+net::DefaultValues net::Defaults = { .inactivityTimeout = std::chrono::seconds(3600),
+                                     .maxExtConnections = 200000 /* arbitrary value to be resolved */ };
 
 #define SOCKET_ABSTRACT_UNIX_NAME "0coolwsd-"
 
@@ -101,22 +94,21 @@ std::string Socket::toString(Type t)
 
 int Socket::createSocket([[maybe_unused]] Socket::Type type)
 {
-    if constexpr (!Util::isMobileApp())
+#if !MOBILEAPP
+    int domain = AF_UNSPEC;
+    switch (type)
     {
-        int domain = AF_UNSPEC;
-        switch (type)
-        {
-        case Type::IPv4: domain = AF_INET;  break;
-        case Type::IPv6: domain = AF_INET6; break;
-        case Type::All:  domain = AF_INET6; break;
-        case Type::Unix: domain = AF_UNIX;  break;
-        default: assert(!"Unknown Socket::Type"); break;
-        }
-
-        return ::socket(domain, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    case Type::IPv4: domain = AF_INET;  break;
+    case Type::IPv6: domain = AF_INET6; break;
+    case Type::All:  domain = AF_INET6; break;
+    case Type::Unix: domain = AF_UNIX;  break;
+    default: assert(!"Unknown Socket::Type"); break;
     }
 
+    return ::socket(domain, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+#else
     return fakeSocketSocket();
+#endif
 }
 
 std::ostream& Socket::streamStats(std::ostream& os, const std::chrono::steady_clock::time_point &now) const
@@ -177,20 +169,16 @@ std::string Socket::toStringImpl() const
     return oss.str();
 }
 
+#if !MOBILEAPP
+
 bool StreamSocket::socketpair(const std::chrono::steady_clock::time_point &creationTime,
                               std::shared_ptr<StreamSocket>& parent,
                               std::shared_ptr<StreamSocket>& child)
 {
-    if constexpr (Util::isMobileApp())
-    {
-        return false;
-    }
-
     int pair[2];
     int rc = ::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair);
     if (rc != 0)
         return false;
-
     child = std::make_shared<StreamSocket>("save-child", pair[0], Socket::Type::Unix, true, HostType::Other, ReadType::NormalRead, creationTime);
     child->setNoShutdown();
     child->setClientAddress("save-child");
@@ -200,6 +188,8 @@ bool StreamSocket::socketpair(const std::chrono::steady_clock::time_point &creat
 
     return true;
 }
+
+#endif
 
 #if ENABLE_DEBUG
 static std::atomic<long> socketErrorCount;
@@ -312,9 +302,6 @@ namespace {
 
 SocketPoll::SocketPoll(std::string threadName)
     : _name(std::move(threadName)),
-      _pollTimeout( net::Defaults::get().SocketPollTimeout ),
-      _limitedConnections( false ),
-      _connectionLimit( 0 ),
       _pollStartIndex(0),
       _stop(false),
       _threadStarted(0),
@@ -381,16 +368,13 @@ void SocketPoll::removeFromWakeupArray()
             getWakeupsArray().erase(it);
     }
 
-    if constexpr (!Util::isMobileApp())
-    {
-        ::close(_wakeup[0]);
-        ::close(_wakeup[1]);
-    }
-    else
-    {
-        fakeSocketClose(_wakeup[0]);
-        fakeSocketClose(_wakeup[1]);
-    }
+#if !MOBILEAPP
+    ::close(_wakeup[0]);
+    ::close(_wakeup[1]);
+#else
+    fakeSocketClose(_wakeup[0]);
+    fakeSocketClose(_wakeup[1]);
+#endif
 
     _wakeup[0] = -1;
     _wakeup[1] = -1;
@@ -516,8 +500,6 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
     // The events to poll on change each spin of the loop.
     setupPollFds(now, timeoutMaxMicroS);
     const size_t size = _pollSockets.size();
-    size_t itemsAdded = 0;
-    size_t itemsErased = 0;
 
     // disable watchdog - it's good to sleep
     disableWatchdog();
@@ -570,29 +552,7 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
         std::vector<CallbackFn> invoke;
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            const size_t newConnCount = _newSockets.size();
-            const size_t globCount = GetStatsConnectionCount();
 
-            if( _limitedConnections &&
-                _connectionLimit > 0 &&
-                globCount + newConnCount > _connectionLimit)
-            {
-                // For now we simply drop new connections
-                const size_t overhead = globCount + newConnCount - _connectionLimit;
-                for(size_t i=0; i<overhead; ++i)
-                {
-                    std::shared_ptr<Socket>& socket = _newSockets.back(); // oldest
-                    assert(socket);
-
-                    LOG_WRN("Limiter: #" << socket->getFD() << ": Removing "
-                             << (i+1) << " / " << overhead << " new socket of (pre "
-                             << globCount << " + new " << newConnCount << ") / max " << _connectionLimit
-                             << " from " << _name);
-
-                    socket->resetThreadOwner();
-                    _newSockets.pop_back();
-                }
-            }
             if (!_newSockets.empty())
             {
                 LOGA_TRC(Socket, "Inserting " << _newSockets.size() << " new sockets after the existing "
@@ -604,8 +564,6 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
 
                 // Copy the new sockets over and clear.
                 _pollSockets.insert(_pollSockets.end(), _newSockets.begin(), _newSockets.end());
-
-                itemsAdded += _newSockets.size();
 
                 _newSockets.clear();
             }
@@ -640,15 +598,10 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
         }
     }
 
-    if (itemsAdded != _pollSockets.size() - size)
+    if (_pollSockets.size() != size)
     {
-        // unexpected
-        LOG_WRN("PollSocket container size has changed from " << size
-            << " + " << itemsAdded << " to " << _pollSockets.size());
-    } else if (itemsAdded > 0)
-    {
-        LOG_TRC("PollSocket container size increased from " << size
-            << " + " << itemsAdded << " to " << _pollSockets.size());
+        LOG_TRC("PollSocket container size has changed from " << size << " to "
+                                                              << _pollSockets.size());
     }
 
     // If we had sockets to process.
@@ -665,6 +618,7 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
         if (_pollStartIndex > size - 1)
             _pollStartIndex = 0;
 
+        size_t itemsErased = 0;
         size_t i = _pollStartIndex;
         for (std::size_t j = 0; j < size; ++j)
         {
@@ -677,25 +631,6 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
             {
                 // removed in a callback
                 ++itemsErased;
-            }
-            else if (!_pollSockets[i]->isOpen())
-            {
-                // closed socket ..
-                ++itemsErased;
-                LOGA_TRC(Socket, '#' << _pollFds[i].fd << ": Removing socket (at " << i
-                         << " of " << _pollSockets.size() << ") from " << _name);
-                _pollSockets[i] = nullptr;
-            }
-            else if( _pollSockets[i]->checkRemoval(newNow) )
-            {
-                // timed out socket .. also checks
-                // ProtocolHandlerInterface
-                // - http::Session::checkTimeout() OK
-                // - WebSocketHandler::checkTimeout() OK
-                ++itemsErased;
-                LOGA_TRC(Socket, '#' << _pollFds[i].fd << ": Removing socket (at " << i
-                         << " of " << _pollSockets.size() << ") from " << _name);
-                _pollSockets[i] = nullptr;
             }
             else if (_pollFds[i].fd == _pollSockets[i]->getFD())
             {
@@ -716,7 +651,7 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
                     rc = -1;
                 }
 
-                if (!_pollSockets[i]->isOpen() || !disposition.isContinue())
+                if (_pollSockets[i]->isClosed() || !disposition.isContinue())
                 {
                     ++itemsErased;
                     LOGA_TRC(Socket, '#' << _pollFds[i].fd << ": Removing socket (at " << i
@@ -743,35 +678,15 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
 
         if (itemsErased)
         {
-            const size_t itemsErasedPre = itemsErased;
-            itemsErased = 0; // correcting itemsErased
+            LOG_TRC("Scanning to removing " << itemsErased << " defunct sockets from "
+                    << _pollSockets.size() << " sockets");
 
             _pollSockets.erase(
                 std::remove_if(_pollSockets.begin(), _pollSockets.end(),
-                               [&itemsErased](const std::shared_ptr<Socket>& s) -> bool
-                               {
-                                   if (!s)
-                                   {
-                                       ++itemsErased;
-                                       return true;
-                                   }
-                                   else
-                                   {
-                                       return false;
-                                   }
-                               }),
+                    [](const std::shared_ptr<Socket>& s)->bool
+                    { return !s; }),
                 _pollSockets.end());
-
-            LOG_TRC("Removed " << itemsErased
-                    << "(" << itemsErasedPre << ") defunct sockets from "
-                    << _pollSockets.size() << " sockets");
         }
-    }
-    if( _limitedConnections )
-    {
-        // Perform bookkeeping if required
-        // New connections might be dropped if exceeding limits, see _newSockets above.
-        StatsConnectionMod(itemsAdded, itemsErased);
     }
 
     return rc;
@@ -779,6 +694,7 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
 
 void SocketPoll::wakeupWorld()
 {
+    std::lock_guard<std::mutex> lock(getPollWakeupsMutex());
     for (const auto& fd : getWakeupsArray())
         wakeup(fd);
 }
@@ -879,11 +795,9 @@ void SocketPoll::createWakeups()
 void SocketPoll::removeSockets()
 {
     LOG_DBG("Removing all " << _pollSockets.size() + _newSockets.size()
-                            << " sockets from SocketPoll thread " << _name
-                            << " of " << GetStatsConnectionCount() << " total poll sockets");
+                            << " sockets from SocketPoll thread " << _name);
     ASSERT_CORRECT_SOCKET_THREAD(this);
 
-    size_t removedPollSockets = 0;
     while (!_pollSockets.empty())
     {
         const std::shared_ptr<Socket>& socket = _pollSockets.back();
@@ -894,10 +808,6 @@ void SocketPoll::removeSockets()
         socket->resetThreadOwner();
 
         _pollSockets.pop_back();
-        ++removedPollSockets;
-    }
-    if( _limitedConnections ) {
-        StatsConnectionMod(0, removedPollSockets);
     }
 
     while (!_newSockets.empty())
@@ -1088,31 +998,31 @@ void SocketDisposition::execute()
     }
 }
 
-void WebSocketHandler::dumpState(std::ostream& os, const std::string& /*indent*/) const
+void WebSocketHandler::dumpState(std::ostream& os, const std::string& indent) const
 {
     os << (_shuttingDown ? "shutd " : "alive ");
 #if !MOBILEAPP
-    os << std::setw(5) << _pingMicroS.last()/1000. << "ms, avg "
-       << _pingMicroS.average()/1000. << "ms ";
+    os << std::setw(5) << _pingTimeUs/1000. << "ms ";
 #endif
     if (_wsPayload.size() > 0)
         Util::dumpHex(os, _wsPayload, "\t\tws queued payload:\n", "\t\t");
     os << '\n';
     if (_msgHandler)
     {
-        os << "msgHandler:\n";
+        os << indent << "msgHandler:\n";
         _msgHandler->dumpState(os);
     }
 }
 
 void StreamSocket::dumpState(std::ostream& os)
 {
-    int64_t timeoutMaxMicroS = _pollTimeout.count();
+    int64_t timeoutMaxMicroS = SocketPoll::DefaultPollTimeoutMicroS.count();
     const int events = getPollEvents(std::chrono::steady_clock::now(), timeoutMaxMicroS);
-    os << '\t' << std::setw(6) << getFD() << "\t0x" << std::hex << events << std::dec << '\t'
-       << (ignoringInput() ? "ignore\t" : "process\t") << std::setw(6) << _inBuffer.size() << '\t'
-       << std::setw(6) << _outBuffer.size() << '\t' << " r: " << std::setw(6) << bytesRcvd()
-       << "\t w: " << std::setw(6) << bytesSent() << '\t' << clientAddress() << '\t';
+    os << '\t' << std::setw(6) << getFD() << "\t0x" << std::hex << events << std::dec
+       << (ignoringInput() ? "\t\tignore\t" : "\t\tprocess\t") << std::setw(7) << _inBuffer.size()
+       << '\t' << std::setw(7) << _inBuffer.capacity() << '\t' << std::setw(6) << _outBuffer.size()
+       << '\t' << std::setw(7) << _outBuffer.capacity() << '\t' << " r: " << std::setw(6)
+       << bytesRcvd() << "\t w: " << std::setw(6) << bytesSent() << '\t' << clientAddress() << '\t';
     _socketHandler->dumpState(os);
     if (_inBuffer.size() > 0)
         Util::dumpHex(os, _inBuffer, "\t\tinBuffer:\n", "\t\t");
@@ -1165,14 +1075,13 @@ void SocketPoll::dumpState(std::ostream& os) const
     const auto pollSockets = _pollSockets;
 
     os << "\n  SocketPoll [" << name() << "] with " << pollSockets.size() << " socket"
-       << (pollSockets.size() == 1 ? "" : "s")
-       << " of " << GetStatsConnectionCount()
-       << " total - wakeup rfd: " << _wakeup[0]
+       << (pollSockets.size() == 1 ? "" : "s") << " - wakeup rfd: " << _wakeup[0]
        << " wfd: " << _wakeup[1] << '\n';
     const auto callbacks = _newCallbacks.size();
     if (callbacks > 0)
         os << "\tcallbacks: " << callbacks << '\n';
-    os << "\t    fd\tevents\trbuffered\twbuffered\trtotal\twtotal\tclientaddress\n";
+    os << "\t\tfd\tevents\tstatus\trbuffered\trcapacity\twbuffered\twcapacity\trtotal\twtotal\tclie"
+          "ntaddress\n";
     for (const std::shared_ptr<Socket>& socket : pollSockets)
         socket->dumpState(os);
     os << "\n  Done [" << name() << "]\n";
@@ -1237,6 +1146,41 @@ bool ServerSocket::bind([[maybe_unused]] Type type, [[maybe_unused]] int port)
 #endif
 }
 
+bool ServerSocket::isUnrecoverableAcceptError(const int cause)
+{
+    constexpr const char * messagePrefix = "Failed to accept. (errno: ";
+    switch(cause)
+    {
+        case EINTR:
+        case EAGAIN:        // == EWOULDBLOCK
+        case ENETDOWN:
+        case EPROTO:
+        case ENOPROTOOPT:
+        case EHOSTDOWN:
+#ifdef ENONET
+        case ENONET:
+#endif
+        case EHOSTUNREACH:
+        case EOPNOTSUPP:
+        case ENETUNREACH:
+        case ECONNABORTED:
+        case ETIMEDOUT:
+        case EMFILE:
+        case ENFILE:
+        case ENOMEM:
+        case ENOBUFS:
+        {
+            LOG_DBG(messagePrefix << std::to_string(cause) << ", " << std::strerror(cause) << ')');
+            return false;
+        }
+        default:
+        {
+            LOG_FTL(messagePrefix << std::to_string(cause) << ", " << std::strerror(cause) << ')');
+            return true;
+        }
+    }
+}
+
 std::shared_ptr<Socket> ServerSocket::accept()
 {
     // Accept a connection (if any) and set it to non-blocking.
@@ -1244,57 +1188,73 @@ std::shared_ptr<Socket> ServerSocket::accept()
 #if !MOBILEAPP
     assert(_type != Socket::Type::Unix);
 
+    UnitWSD* const unitWsd = UnitWSD::isUnitTesting() ? &UnitWSD::get() : nullptr;
+    if (unitWsd && unitWsd->simulateExternalAcceptError())
+        return nullptr; // Recoverable error, ignore to retry
+
     struct sockaddr_in6 clientInfo;
     socklen_t addrlen = sizeof(clientInfo);
     const int rc = ::accept4(getFD(), (struct sockaddr *)&clientInfo, &addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #else
     const int rc = fakeSocketAccept4(getFD());
 #endif
+    if (rc < 0)
+    {
+        if (isUnrecoverableAcceptError(errno))
+            Util::forcedExit(EX_SOFTWARE);
+        return nullptr;
+    }
     LOG_TRC("Accepted socket #" << rc << ", creating socket object.");
+
+#if !MOBILEAPP
+    char addrstr[INET6_ADDRSTRLEN];
+
+    Socket::Type type;
+    const void *inAddr;
+    if (clientInfo.sin6_family == AF_INET)
+    {
+        struct sockaddr_in *ipv4 = (struct sockaddr_in *)&clientInfo;
+        inAddr = &(ipv4->sin_addr);
+        type = Socket::Type::IPv4;
+    }
+    else
+    {
+        struct sockaddr_in6 *ipv6 = &clientInfo;
+        inAddr = &(ipv6->sin6_addr);
+        type = Socket::Type::IPv6;
+    }
+    ::inet_ntop(clientInfo.sin6_family, inAddr, addrstr, sizeof(addrstr));
+
+    const size_t extConnCount = StreamSocket::getExternalConnectionCount();
+    if (net::Defaults.maxExtConnections > 0 && extConnCount >= net::Defaults.maxExtConnections)
+    {
+        LOG_WRN("Limiter rejected extConn[" << extConnCount << "/" << net::Defaults.maxExtConnections << "]: #"
+                << rc << " has family "
+                << clientInfo.sin6_family << ", address " << addrstr << ":" << clientInfo.sin6_port);
+        ::close(rc);
+        return nullptr;
+    }
     try
     {
         // Create a socket object using the factory.
-        if (rc != -1)
-        {
-#if !MOBILEAPP
-            char addrstr[INET6_ADDRSTRLEN];
+        std::shared_ptr<Socket> _socket = createSocketFromAccept(rc, type);
+        if (unitWsd)
+            unitWsd->simulateExternalSocketCtorException(_socket);
 
-            Socket::Type type;
-            const void *inAddr;
-            if (clientInfo.sin6_family == AF_INET)
-            {
-                struct sockaddr_in *ipv4 = (struct sockaddr_in *)&clientInfo;
-                inAddr = &(ipv4->sin_addr);
-                type = Socket::Type::IPv4;
-            }
-            else
-            {
-                struct sockaddr_in6 *ipv6 = &clientInfo;
-                inAddr = &(ipv6->sin6_addr);
-                type = Socket::Type::IPv6;
-            }
+        _socket->setClientAddress(addrstr, clientInfo.sin6_port);
 
-            std::shared_ptr<Socket> _socket = createSocketFromAccept(rc, type);
-
-            ::inet_ntop(clientInfo.sin6_family, inAddr, addrstr, sizeof(addrstr));
-            _socket->setClientAddress(addrstr, clientInfo.sin6_port);
-
-            LOG_TRC("Accepted socket #" << _socket->getFD() << " has family "
-                                        << clientInfo.sin6_family << " address "
-                                        << _socket->clientAddress());
-#else
-            std::shared_ptr<Socket> _socket = createSocketFromAccept(rc, Socket::Type::Unix);
-#endif
-            return _socket;
-        }
-        return std::shared_ptr<Socket>(nullptr);
+        LOG_TRC("Accepted socket #" << _socket->getFD() << " has family "
+                                    << clientInfo.sin6_family << ", " << *_socket);
+        return _socket;
     }
     catch (const std::exception& ex)
     {
         LOG_ERR("Failed to create client socket #" << rc << ". Error: " << ex.what());
     }
-
     return nullptr;
+#else
+    return createSocketFromAccept(rc, Socket::Type::Unix);
+#endif
 }
 
 #if !MOBILEAPP
@@ -1340,11 +1300,15 @@ bool Socket::isLocal() const
 std::shared_ptr<Socket> LocalServerSocket::accept()
 {
     const int rc = ::accept4(getFD(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (rc < 0)
+    {
+        if (isUnrecoverableAcceptError(errno))
+            Util::forcedExit(EX_SOFTWARE);
+        return nullptr;
+    }
     try
     {
         LOG_DBG("Accepted prisoner socket #" << rc << ", creating socket object.");
-        if (rc < 0)
-            return std::shared_ptr<Socket>(nullptr);
 
         std::shared_ptr<Socket> _socket = createSocketFromAccept(rc, Socket::Type::Unix);
         // Sanity check this incoming socket
@@ -1394,8 +1358,8 @@ std::shared_ptr<Socket> LocalServerSocket::accept()
     catch (const std::exception& ex)
     {
         LOG_ERR("Failed to create client socket #" << rc << ". Error: " << ex.what());
-        return std::shared_ptr<Socket>(nullptr);
     }
+    return nullptr;
 }
 
 /// Returns true on success only.
@@ -1499,46 +1463,39 @@ std::ostream& StreamSocket::stream(std::ostream& os) const
 
 bool StreamSocket::checkRemoval(std::chrono::steady_clock::time_point now)
 {
-    if( isIPType() )
+    if (!isIPType())
+        return false;
+
+    // Forced removal on outside-facing IPv[46] network connections only
+    const auto durLast =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - getLastSeenTime());
+    /// Timeout criteria: Violate maximum inactivity (default 3600s)
+    const bool isInactive = net::Defaults.inactivityTimeout > std::chrono::microseconds::zero() &&
+        durLast > net::Defaults.inactivityTimeout;
+    /// Timeout criteria: Shall terminate?
+    const bool isTermination = SigUtil::getTerminationFlag();
+    if (isInactive || isTermination )
     {
-        // Forced removal on outside-facing IPv[46] network connections only
-        const auto durLast =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - getLastSeenTime());
-        /// TO Criteria: Violate maximum idle (_pollTimeout default 64s)
-        const bool isIDLE = _pollTimeout > std::chrono::microseconds::zero() &&
-                           durLast > _pollTimeout;
-        /// TO Criteria: Shall terminate?
-        const bool isTermination = SigUtil::getTerminationFlag();
-        if (isIDLE || isTermination )
+        LOG_WRN("CheckRemoval: Timeout: {Inactive " << isInactive
+                << ", Termination " << isTermination << "}, "
+                << getStatsString(now) << ", "
+                << *this);
+        if (_socketHandler)
         {
-            LOG_WRN("CheckRemoval: Timeout: {IDLE " << isIDLE
-                    << ", Termination " << isTermination << "}, "
-                    << getStatsString(now) << ", "
-                    << *this);
-            if (_socketHandler)
-            {
-                _socketHandler->onDisconnect();
-                if( isOpen() ) {
-                    // Note: Ensure proper semantics of onDisconnect()
-                    LOG_WRN("Socket still open post onDisconnect(), forced shutdown.");
-                    shutdown(); // signal
-                    closeConnection(); // real -> setClosed()
-                }
-            }
-            else
-            {
+            _socketHandler->onDisconnect();
+            if (!isClosed()) {
+                // Note: Ensure proper semantics of onDisconnect()
+                LOG_WRN("Socket still open post onDisconnect(), forced shutdown.");
                 shutdown(); // signal
                 closeConnection(); // real -> setClosed()
             }
-            assert(isOpen() == false); // should have issued shutdown
-            return true;
         }
-    }
-    if (_socketHandler && _socketHandler->checkTimeout(now))
-    {
-        assert(isOpen() == false); // should have issued shutdown
-        setClosed();
-        LOG_WRN("CheckRemoval: Timeout: " << getStatsString(now) << ", " << *this);
+        else
+        {
+            shutdown(); // signal
+            closeConnection(); // real -> setClosed()
+        }
+        assert(isClosed()); // should have issued shutdown
         return true;
     }
     return false;
@@ -1554,8 +1511,8 @@ bool StreamSocket::parseHeader(const char *clientName,
 {
     assert(map._headerSize == 0 && map._messageSize == 0);
 
-    const std::chrono::duration<float, std::milli> delayMax =
-        std::chrono::duration_cast<std::chrono::milliseconds>(_httpTimeout);
+    constexpr std::chrono::duration<float, std::milli> delayMax =
+        std::chrono::duration_cast<std::chrono::milliseconds>(SocketPoll::DefaultPollTimeoutMicroS);
 
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     std::chrono::duration<float, std::milli> delayMs = now - lastHTTPHeader;
@@ -1583,7 +1540,7 @@ bool StreamSocket::parseHeader(const char *clientName,
         const std::streamsize available = _inBuffer.size() - offset;
 
         LOG_INF("parseHeader: " << clientName << " HTTP Request: " << request.getMethod()
-                                << ", uri `" << request.getURI() << "` " << request.getVersion()
+                                << ", uri: [" << request.getURI() << "] " << request.getVersion()
                                 << ", sz[header " << map._headerSize << ", content "
                                 << contentLength << "], offset " << offset << ", chunked "
                                 << request.getChunkedTransferEncoding() << ", "
@@ -1757,7 +1714,7 @@ bool StreamSocket::compactChunks(MessageMap& map)
     LOG_CHUNK("Pre-compact " << map._spans.size() << " chunks: \n" <<
               Util::dumpHex("", "", _inBuffer.begin(), _inBuffer.end(), false));
 
-    char *first = &_inBuffer[0];
+    char *first = _inBuffer.data();
     char *dest = first;
     for (const auto &span : map._spans)
     {
@@ -1832,7 +1789,14 @@ namespace http
 {
 std::string getAgentString() { return "COOLWSD HTTP Agent " + Util::getCoolVersion(); }
 
-std::string getServerString() { return "COOLWSD HTTP Server " + Util::getCoolVersion(); }
+std::string getServerString()
+{
+    CONFIG_STATIC const bool sig = ConfigUtil::getBool("security.server_signature", false);
+    if (sig)
+        return "COOLWSD HTTP Server " + Util::getCoolVersion();
+
+    return " ";
+}
 }
 
 extern "C" {

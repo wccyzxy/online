@@ -242,7 +242,7 @@ class DeltaGenerator {
 
         void initRow(const uint32_t *from, unsigned int width)
         {
-            uint32_t scratch[width];
+            auto scratch = static_cast<uint32_t*>(alloca(sizeof(uint32_t) * width));
 
             bool done = false;
             if (simd::HasAVX2 && width == 256)
@@ -678,12 +678,14 @@ class DeltaGenerator {
 
     void dumpState(std::ostream& oss)
     {
-        oss << "\tdelta generator with " << _deltaEntries.size() << " entries vs. max " << _maxEntries << "\n";
+        oss << "\tdelta generator with " << _deltaEntries.size() << " entries vs. max "
+            << _maxEntries << '\n';
         size_t totalSize = 0;
         for (const auto& it : _deltaEntries)
         {
             size_t size = it->sizeBytes();
-            oss << "\t\t" << it->_loc._size << "," << it->_loc._part << "," << it->_loc._left << "," << it->_loc._top << " wid: " << it->getWid() << " size: " << size << "\n";
+            oss << "\t\t" << it->_loc._size << ',' << it->_loc._part << ',' << it->_loc._left << ','
+                << it->_loc._top << " wid: " << it->getWid() << " size: " << size << '\n';
             totalSize += size;
         }
         oss << "\tdelta generator consumes " << totalSize << " bytes\n";
@@ -841,7 +843,7 @@ class DeltaGenerator {
             outb.size = maxCompressed;
             outb.pos = 0;
 
-            unsigned char packedLine[rowSize];
+            auto packedLine = static_cast<unsigned char*>(alloca(rowSize));
 
             for (int y = 0; y < height; ++y)
             {

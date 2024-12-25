@@ -21,14 +21,15 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
+#include <common/Anonymizer.hpp>
 #include <common/Seccomp.hpp>
 #include <common/JsonUtil.hpp>
 #include <common/TraceEvent.hpp>
 #include <common/Uri.hpp>
 
 #include "Kit.hpp"
-#include "KitQueue.hpp"
 #include "ChildSession.hpp"
+#include "SigUtil.hpp"
 #include "KitWebSocket.hpp"
 
 using Poco::Exception;
@@ -68,7 +69,8 @@ void KitWebSocketHandler::handleMessage(const std::vector<char>& data)
         _docKey = tokens[2];
         const std::string& docId = tokens[3];
         const std::string fileId = Uri::getFilenameFromURL(_docKey);
-        Util::mapAnonymized(fileId, fileId); // Identity mapping, since fileId is already obfuscated
+        Anonymizer::mapAnonymized(fileId,
+                                  fileId); // Identity mapping, since fileId is already obfuscated
 
         const std::string url = Uri::decode(_docKey);
 #ifndef IOS
@@ -325,16 +327,10 @@ void BgSaveParentWebSocketHandler::onDisconnect()
     LOG_TRC("Disconnected background web socket to child " << _childPid);
 
     // reap and de-zombify children.
-    int status = -1;
-    if (waitpid(_childPid, &status, WUNTRACED | WNOHANG) > 0)
-    {
-        LOG_TRC("Child " << _childPid << " terminated with status " << status);
-        if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV ||
-                                    WTERMSIG(status) == SIGBUS ||
-                                    WTERMSIG(status) == SIGABRT))
-            reportFailedSave("crashed with status " + std::to_string(WTERMSIG(status)));
-    }
-    else
+    const auto [ret, sig] = SigUtil::reapZombieChild(_childPid);
+    if (sig)
+        reportFailedSave(std::string("crashed with status ") + SigUtil::signalName(sig));
+    else if (ret <= 0)
         LOG_WRN("Background save process disconnected but not terminated " << _childPid);
 
     if (!_saveCompleted)

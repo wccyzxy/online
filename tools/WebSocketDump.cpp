@@ -97,7 +97,7 @@ private:
         // Skip the marker.
         itBody += marker.size();
 
-        Poco::MemoryInputStream message(&in[0], in.size());
+        Poco::MemoryInputStream message(in.data(), in.size());
         Poco::Net::HTTPRequest request;
         try
         {
@@ -230,6 +230,7 @@ int main (int argc, char **argv)
     }
 
     Log::initialize("WebSocketDump", "trace", true, false,
+                    std::map<std::string, std::string>(), false,
                     std::map<std::string, std::string>());
 
     CoolConfig config;

@@ -29,6 +29,33 @@
 class Document;
 class ChildSession;
 
+struct LogUiCommandsLine {
+    std::chrono::steady_clock::time_point _timeStart;
+    std::chrono::steady_clock::time_point _timeEnd;
+    int _repeat = 0;
+    int _undoChange = 0;
+    std::string _cmd;
+    std::string _subCmd;
+};
+
+class LogUiCommands {
+public:
+    ChildSession* _session;
+    int _lastUndoCount = 0;
+    const StringVector* _tokens;
+    LogUiCommands(ChildSession* session, const StringVector* tokens) : _session(session),_tokens(tokens) {}
+    ~LogUiCommands();
+private:
+    // list the commands to log here.
+    std::set<std::string> _cmdToLog = {
+        "uno", "key", "mouse", "textinput", "removetextcontext",
+        "paste", "insertfile", "dialogevent" };
+    // list the the uno commands here, that are not to log. It will serach these strings as a prefixes
+    std::set<std::string> _unoCmdToNotLog = {
+        ".uno:SidebarShow", ".uno:ToolbarMode" };
+    void logLine(LogUiCommandsLine &line, bool isUndoChange=false);
+};
+
 enum class LokEventTargetEnum
 {
     Document,
@@ -117,7 +144,7 @@ public:
     // Only called by kit.
     void setCanonicalViewId(int viewId) { _canonicalViewId = viewId; }
 
-    int  getCanonicalViewId() { return _canonicalViewId; }
+    int  getCanonicalViewId() const { return _canonicalViewId; }
 
     void setViewRenderState(const std::string& state) { _viewRenderState = state; }
 
@@ -127,8 +154,7 @@ public:
 
     std::string getViewRenderState() { return _viewRenderState; }
 
-    bool isTileInsideVisibleArea(const TileDesc& tile) const;
-    bool isTileInsideVisibleArea(const TileCombined& tileCombined) const;
+    float getTilePriority(const std::chrono::steady_clock::time_point &now, const TileDesc &desc) const;
 
 private:
     bool loadDocument(const StringVector& tokens);
@@ -158,7 +184,7 @@ private:
     bool unoSignatureCommand();
     bool selectText(const StringVector& tokens, const LokEventTargetEnum target);
     bool selectGraphic(const StringVector& tokens);
-    bool renderNextSlideLayer(const unsigned width, const unsigned height, bool& done);
+    bool renderNextSlideLayer(const unsigned width, const unsigned height, double dDevicePixelRatio, bool& done);
     bool renderSlide(const StringVector& tokens);
     bool renderWindow(const StringVector& tokens);
     bool resizeWindow(const StringVector& tokens);
@@ -215,6 +241,9 @@ private:
         return ret;
     }
 
+    void updateCursorPosition(const std::string &rect);
+    void updateCursorPositionJSON(const std::string &payload);
+
 public:
     // simple one line for priming
     std::string getActivityState()
@@ -235,6 +264,8 @@ public:
         Session::dumpState(oss);
 
         oss << "\n\tviewId: " << _viewId
+            << "\n\tpart: " << _currentPart
+            << "\n\tcursor: " << _cursorPosition.toString()
             << "\n\tcanonicalViewId: " << _canonicalViewId
             << "\n\tisDocLoaded: " << _isDocLoaded
             << "\n\tdocType: " << _docType
@@ -264,6 +295,12 @@ private:
 
     /// View ID, returned by createView() or 0 by default.
     int _viewId;
+
+    /// Currently visible part
+    int _currentPart;
+
+    /// Last known position of a cursor for prioritizing rendering
+    Util::Rectangle _cursorPosition;
 
     /// Whether document has been opened successfully
     bool _isDocLoaded;
@@ -300,6 +337,10 @@ private:
     bool _hasURP;
 
     // When state is added - please update dumpState above.
+
+    friend class LogUiCommands;
+    int _lastUiCmdLinesLoggedCount = 0;
+    LogUiCommandsLine _lastUiCmdLinesLogged[2];
 };
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

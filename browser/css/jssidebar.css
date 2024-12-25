@@ -6,6 +6,10 @@
 	color: var(--color-main-text);
 }
 
+div.ui-grid-cell.sidebar.jsdialog {
+	row-gap: 5px;
+}
+
 img.sidebar.ui-image {
 	/* Images that are not buttons (e.g. spinfield)
 	   16px + 6px + 6px = 28px, same height as grid cell */
@@ -31,7 +35,7 @@ img.sidebar.ui-drawing-area {
 	box-sizing: border-box;
 }
 [data-userinterfacemode='classic'] #document-container:not(.mobile) + #sidebar-dock-wrapper,
-#document-container.spreadsheet-doctype:not(.mobile) + #sidebar-dock-wrapper {
+[data-docType='spreadsheet'] #document-container:not(.mobile) + #sidebar-dock-wrapper {
 	border-inline-start: 1px solid var(--color-border);
 }
 .sidebar .menu-entry-icon {
@@ -98,7 +102,7 @@ img.sidebar.ui-drawing-area {
 	line-height: var(--default-height);
 }
 
-.sidebar.ui-grid.ui-grid-cell > div {
+.sidebar.ui-grid.ui-grid-cell > div:not(.ui-treeview) {
 	justify-content: start;
 	display: flex;
 }
@@ -307,30 +311,36 @@ button#button2.ui-pushbutton.jsdialog.sidebar {
 #NavigatorDeck .ui-expander-content > .root-container.jsdialog {
 	margin: 0;
 }
-#NavigatorDeck .ui-treeview-entry {
+#NavigatorDeck div {
 	padding-inline-start: 0;
 	background-color: transparent;
-	margin-block-end: 8px;
 }
-#NavigatorDeck .ui-listview-icon {
+#NavigatorDeck .ui-treeview-icon {
 	width: var(--btn-size-s);
 	height: var(--btn-size-s);
 }
-#NavigatorDeck .ui-treeview-entry.selected {
+#NavigatorDeck div.selected {
 	background-color: var(--color-background-dark);
 	color: var(--color-primary);
 }
-[data-theme='dark'] #NavigatorDeck .ui-treeview-entry.selected {
+[data-theme='dark'] #NavigatorDeck div.selected {
 	background-color: transparent;
 	color: var(--color-text-lighter);
 }
-#NavigatorDeck .ui-treeview-entry.selected:not(.ui-listview-expandable-with-icon)::before {
+
+#NavigatorDeck .ui-treeview-entry,
+#NavigatorDeck .ui-treeview-expanded-content {
+	margin-block-end: 8px;
+}
+
+#NavigatorDeck div.selected:not(.ui-treeview-expandable-with-icon):not(:empty):not([aria-level='1'])::before {
 	content: '–';
+	/* good to move this into css var*/
 	font-size: 17px;
 	font-weight: 500;
-	line-height: 1.2;
-	position: absolute;
-	left: 20px;
+	position: relative;
+	left: -20px;
+	width: 0px;
 }
 #NavigatorDeck .ui-treeview-cell-text {
 	/* good to move this into css var*/
@@ -340,14 +350,67 @@ button#button2.ui-pushbutton.jsdialog.sidebar {
 	/* Move this whole block away and fix in the main control */
 	display: flex;
 	align-items: center;
-	width: 200px;
 	word-break: break-word;
 }
 
-span.jsdialog.sidebar.ui-treeview-entry.ui-treeview-notexpandable {
+span.jsdialog.sidebar.ui-treeview-notexpandable {
 	margin-left: 15px;
 }
 
 #NavigatorDeck .ui-expander {
 	display: none;
+}
+
+/* Styles deck */
+#StyleListPanelPanelExpander [id='2'] button { background: transparent url('images/lc_parastyle.svg') no-repeat center; }
+#StyleListPanelPanelExpander [id='1'] button { background: transparent url('images/lc_charstyle.svg') no-repeat center; }
+#StyleListPanelPanelExpander [id='3'] button { background: transparent url('images/lc_framestyle.svg') no-repeat center; }
+#StyleListPanelPanelExpander [id='4'] button { background: transparent url('images/lc_pagestyle.svg') no-repeat center; }
+#StyleListPanelPanelExpander [id='5'] button { background: transparent url('images/lc_liststyle.svg') no-repeat center; }
+#StyleListPanelPanelExpander [id='6'] button { background: transparent url('images/lc_tablestyle.svg') no-repeat center; }
+
+#StyleListPanelPanelExpander #left.toolbox button {
+	background-size: cover;
+}
+
+#StyleListPanelPanelExpander #left.toolbox img {
+	visibility: hidden;
+}
+
+#StyleListPanelPanelExpander #TemplatePanel #filter select {
+	width: 100%;
+}
+
+/* required to dynamically resize treeviews or lists inside sidebar */
+.sidebar-container,
+.sidebar-container > .root-container.jsdialog.sidebar,
+.sidebar-container > .root-container.jsdialog.sidebar > .vertical.jsdialog.sidebar {
+	height: 100%;
+}
+
+#StyleListDeck,
+#StyleListDeck .root-container.jsdialog.sidebar,
+#StyleListDeck .vertical.jsdialog.sidebar,
+#StyleListPanelPanelExpander,
+#StyleListPanelPanelExpander #content,
+#StyleListPanelPanelExpander #TemplatePanel {
+	height: 100%;
+}
+
+#StyleListPanelPanelExpander .ui-expander-content.jsdialog.sidebar.expanded {
+	height: calc(100% - 45px);
+}
+
+#TemplatePanel {
+	display: flex;
+	flex-direction: column;
+}
+
+#TemplatePanel > div {
+	flex-grow: 0;
+}
+
+#TemplatePanel > div:nth-child(3),
+#TemplatePanel > div:nth-child(4) {
+	flex-grow: 1;
 }

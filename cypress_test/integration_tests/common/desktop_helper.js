@@ -181,13 +181,20 @@ function shouldHaveZoomLevel(zoomLevel) {
 function makeZoomItemsVisible() {
 	cy.log('>> makeZoomItemsVisible - start');
 
-	cy.cGet('#toolbar-down #zoomin')
-		.then(function(zoomInItem) {
-			if (!Cypress.dom.isVisible(zoomInItem)) {
-				cy.cGet('#toolbar-down .ui-scroll-right').click();
+	const scrollRight = () => {
+		cy.cGet('#toolbar-down .ui-scroll-right').then($scrollRightButton => {
+			if ($scrollRightButton.is(':visible')) {
+				// Wrap .ui-scroll-right so we can continue executing commands
+				cy.wrap($scrollRightButton).click();
+				// Wait the same ms as in Util.ScrollableBar.ts timeout
+				cy.wait(350);
+				// Scroll again if $scrollRightButton is visible
+				scrollRight();
 			}
 		});
+	};
 
+	scrollRight();
 	cy.cGet('#toolbar-down #zoomin').should('be.visible');
 
 	cy.log('<< makeZoomItemsVisible - end');
@@ -552,6 +559,20 @@ function updateFollowingUsers() {
 		});
 }
 
+function assertVisiblePage(min, max, allPages) {
+	const expectedArray = [];
+
+	if (min === max) {
+		expectedArray.push('Page ' + min + ' of ' + allPages);
+	} else {
+		expectedArray.push('Page ' + min + ' of ' + allPages);
+		expectedArray.push('Pages ' + min + ' and ' + max + ' of ' + allPages);
+		expectedArray.push('Page ' + max + ' of ' + allPages);
+	}
+
+	cy.cGet('#StatePageNumber').invoke('text').should('be.oneOf', expectedArray);
+}
+
 module.exports.showSidebar = showSidebar;
 module.exports.hideSidebar = hideSidebar;
 module.exports.hideSidebarImpress = hideSidebarImpress;
@@ -583,3 +604,4 @@ module.exports.checkAccessibilityEnabledToBe = checkAccessibilityEnabledToBe;
 module.exports.setAccessibilityState = setAccessibilityState;
 module.exports.scrollWriterDocumentToTop = scrollWriterDocumentToTop;
 module.exports.updateFollowingUsers = updateFollowingUsers;
+module.exports.assertVisiblePage = assertVisiblePage;

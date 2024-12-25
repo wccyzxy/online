@@ -135,6 +135,30 @@ class TupleAnimation extends GenericAnimation {
 	}
 }
 
+class HSLAnimationWrapper implements AnimationBase {
+	private aAnimation: AnimationBase;
+
+	constructor(aColorAnimation: AnimationBase) {
+		this.aAnimation = aColorAnimation;
+	}
+
+	start(aAnimatableElement: AnimatedElement) {
+		this.aAnimation.start(aAnimatableElement);
+	}
+
+	end() {
+		this.aAnimation.end();
+	}
+
+	perform(aHSLValue: HSLColor) {
+		this.aAnimation.perform(aHSLValue.convertToRGB());
+	}
+
+	getUnderlyingValue() {
+		return this.aAnimation.getUnderlyingValue().convertToHSL();
+	}
+}
+
 function createPropertyAnimation(
 	sAttrName: string,
 	aAnimatedElement: AnimatedElement,
@@ -281,9 +305,9 @@ class TransitionFilterAnimation extends AnimationBase {
 		this.aAnimatableElement.setTransitionFilterFrame(this, nT);
 	}
 
-	renderFrame(nT: number): void {
+	renderFrame(nT: number, properties?: AnimatedElementRenderProperties): void {
 		if (this.aTransition) {
-			this.aTransition.renderFrame(nT);
+			this.aTransition.renderFrame(nT, properties);
 		}
 	}
 
@@ -309,58 +333,90 @@ class TransitionFilterAnimation extends AnimationBase {
 		return transitionParameters;
 	}
 
-	/* jscpd:ignore-start */
 	private createShapeTransition(
 		transitionParameters: TransitionParameters,
 	): TransitionBase {
-		const type = this.aTransitionFilterInfo.transitionType;
-		switch (type) {
-			case TransitionType.BARWIPE:
-				return BarWipeTransition(transitionParameters);
-
-			case TransitionType.PINWHEELWIPE:
-				return new SlideShow.WheelTransition(transitionParameters);
-
-			case TransitionType.RANDOMBARWIPE:
-				return new SlideShow.BarsTransition(transitionParameters);
-
-			case TransitionType.CHECKERBOARDWIPE:
-				return new SlideShow.CheckersTransition(transitionParameters);
-
-			case TransitionType.FOURBOXWIPE:
-				return new SlideShow.PlusTransition(transitionParameters);
-
-			case TransitionType.IRISWIPE:
-				return SlideShow.IrisWipeTransition(transitionParameters);
-
-			case TransitionType.ELLIPSEWIPE:
-				return SlideShow.EllipseWipeTransition(transitionParameters);
-
-			case TransitionType.FANWIPE:
-				return new SlideShow.WedgeTransition(transitionParameters);
-
-			case TransitionType.BLINDSWIPE:
-				return new SlideShow.VenetianTransition(transitionParameters);
-
-			case TransitionType.DISSOLVE:
-				return new SlideShow.SimpleDissolveTransition(transitionParameters);
-
-			case TransitionType.BARNDOORWIPE:
-				return new SlideShow.SplitTransition(transitionParameters);
-
-			case TransitionType.WATERFALLWIPE:
-				return new SlideShow.DiagonalTransition(transitionParameters);
-
-			default:
-				console.log(
-					'Unknown transition type',
-					transitionParameters.transitionFilterInfo.transitionType,
-				);
-				return new SlideShow.NoTransition(transitionParameters);
-		}
+		return createTransition(transitionParameters, /*isSlideTransition*/ false);
 	}
 }
-/* jscpd:ignore-end */
+
+class PathAnimation extends AnimationBase {
+	private path: string;
+	private eAdditive: AdditiveMode;
+	private slideWidth: number;
+	private slideHeight: number;
+	private aAnimatableElement: AnimatedElement;
+	private bAnimationStarted: boolean;
+	private centerX: number;
+	private centerY: number;
+	private svgPath: SVGPathElement;
+	private pathLength: number;
+
+	constructor(
+		path: string,
+		eAdditive: AdditiveMode,
+		slideWidth: number,
+		slideHeight: number,
+	) {
+		super();
+		this.path = path;
+		this.eAdditive = eAdditive;
+		this.slideWidth = slideWidth;
+		this.slideHeight = slideHeight;
+
+		this.svgPath = this.createSvgPath(path);
+		this.pathLength = this.svgPath.getTotalLength();
+	}
+
+	start(aAnimatableElement: AnimatedElement): void {
+		assert(
+			aAnimatableElement,
+			'GenericAnimation.start: animatable element is not valid',
+		);
+
+		this.aAnimatableElement = aAnimatableElement;
+		this.centerX = this.aAnimatableElement.getBaseCenterX();
+		this.centerY = this.aAnimatableElement.getBaseCenterY();
+
+		this.aAnimatableElement.notifyAnimationStart();
+
+		if (!this.bAnimationStarted) this.bAnimationStarted = true;
+	}
+
+	end(): void {
+		if (this.bAnimationStarted) {
+			this.bAnimationStarted = false;
+			this.aAnimatableElement.notifyAnimationEnd();
+		}
+	}
+
+	perform(nT: number): void {
+		let aOutPos = this.parametricPath(nT);
+		aOutPos = [aOutPos[0] * this.slideWidth, aOutPos[1] * this.slideHeight];
+		aOutPos = [aOutPos[0] + this.centerX, aOutPos[1] + this.centerY];
+
+		this.aAnimatableElement.setPos(aOutPos);
+	}
+
+	getUnderlyingValue(): any {
+		return 0.0;
+	}
+
+	private createSvgPath(path: string): SVGPathElement {
+		const svgPath = document.createElementNS(
+			'http://www.w3.org/2000/svg',
+			'path',
+		);
+		svgPath.setAttribute('d', path);
+		return svgPath;
+	}
+
+	private parametricPath(nT: number): [number, number] {
+		const distance = this.pathLength * nT;
+		const point = this.svgPath.getPointAtLength(distance);
+		return [point.x, point.y];
+	}
+}
 
 function createShapeTransition(
 	aActivityParamSet: ActivityParamSet,
@@ -468,17 +524,31 @@ function createShapeTransition(
 				}
 				// we map everything else to crossfade
 				default: {
-					const aAnimation = createPropertyAnimation(
-						'opacity',
+					return createCrossFadeTransition(
+						aActivityParamSet,
 						aAnimatedElement,
 						nSlideWidth,
 						nSlideHeight,
+						bModeIn,
 					);
-					const eDirection = bModeIn
-						? DirectionType.Forward
-						: DirectionType.Backward;
-					return new SimpleActivity(aActivityParamSet, aAnimation, eDirection);
 				}
 			}
 	}
+}
+
+function createCrossFadeTransition(
+	aActivityParamSet: ActivityParamSet,
+	aAnimatedElement: AnimatedElement,
+	nSlideWidth: number,
+	nSlideHeight: number,
+	bModeIn: boolean,
+): AnimationActivity {
+	const aAnimation = createPropertyAnimation(
+		'opacity',
+		aAnimatedElement,
+		nSlideWidth,
+		nSlideHeight,
+	);
+	const eDirection = bModeIn ? DirectionType.Forward : DirectionType.Backward;
+	return new SimpleActivity(aActivityParamSet, aAnimation, eDirection);
 }

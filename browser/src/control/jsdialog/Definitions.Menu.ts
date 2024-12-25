@@ -260,6 +260,11 @@ menuDefinitions.set('InsertImageMenu', [
 	// remote entry added in Map.WOPI
 ] as Array<MenuDefinition>);
 
+menuDefinitions.set('InsertMultimediaMenu', [
+	{ action: 'insertmultimedia', text: _('Insert Local Multimedia') },
+	// remote entry added in Map.WOPI
+] as Array<MenuDefinition>);
+
 menuDefinitions.set('CharSpacingMenu', [
 	{ id: 'space1', text: _('Very Tight'), uno: 'Spacing?Spacing:short=-60' },
 	{ id: 'space1', text: _('Tight'), uno: 'Spacing?Spacing:short=-30' },
@@ -310,10 +315,7 @@ menuDefinitions.set('ConditionalFormatMenu', [
 				uno: '.uno:ConditionalFormatEasy?FormatRule:short=23',
 			},
 			{ type: 'separator' },
-			{
-				text: _('More highlights...'),
-				uno: '.uno:ConditionalFormatManagerDialog',
-			},
+			{ text: _('More highlights...'), uno: '.uno:ConditionalFormatDialog' },
 		],
 	},
 	{
@@ -344,10 +346,7 @@ menuDefinitions.set('ConditionalFormatMenu', [
 				uno: '.uno:ConditionalFormatEasy?FormatRule:short=16',
 			},
 			{ type: 'separator' },
-			{
-				text: _('More highlights...'),
-				uno: '.uno:ConditionalFormatManagerDialog',
-			},
+			{ text: _('More highlights...'), uno: '.uno:ConditionalFormatDialog' },
 		],
 	},
 	{ type: 'separator' },

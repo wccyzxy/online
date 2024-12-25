@@ -29,13 +29,25 @@ $(L10N_IOS_ALL_JS) : $(wildcard $(srcdir)/po/ui-*.po) $(shell find $(srcdir)/l10
 	done
 endif
 
+QUIET_TSC = $(QUIET_TSC_$(V))
+QUIET_TSC_ = $(QUIET_TSC_$(AM_DEFAULT_VERBOSITY))
+QUIET_TSC_0 = @echo "  TSC     " $@;
+
+QUIET_ESLINT = $(QUIET_ESLINT_$(V))
+QUIET_ESLINT_ = $(QUIET_ESLINT_$(AM_DEFAULT_VERBOSITY))
+QUIET_ESLINT_0 = @echo "  ESLINT  " $@;
+
+QUIET_PRETTIER = $(QUIET_PRETTIER_$(V))
+QUIET_PRETTIER_ = $(QUIET_PRETTIER_$(AM_DEFAULT_VERBOSITY))
+QUIET_PRETTIER_0 = @echo "  PRETTIER" $@;
+
 MOCHA_DIR = $(srcdir)/mocha_tests
 MOCHA_TS_FILES = $(wildcard $(MOCHA_DIR)/*.ts)
 MOCHA_TS_JS_FILES := $(MOCHA_TS_FILES:.ts=.js)
 # tsc can report a failure, but still create a .js and a second make attempt will succeed,
 # so if this returns an error then delete the target
 $(MOCHA_TS_JS_FILES): %.js: %.ts
-	$(builddir)/node_modules/typescript/bin/tsc $< --outfile $@ --module none --lib dom,es2016 --target ES5 || (rm -f $@ && false)
+	$(QUIET_TSC) $(builddir)/node_modules/typescript/bin/tsc $< --outfile $@ --module none --lib dom,es2016 --target ES5 || (rm -f $@ && false)
 
 JQUERY_LIGHTNESS_IMAGE_PATH = $(srcdir)/images/jquery-ui-lightness
 JQUERY_LIGHTNESS_IMAGES = $(wildcard $(JQUERY_LIGHTNESS_IMAGE_PATH)/*.png)
@@ -49,7 +61,7 @@ COOL_IMAGES_SRC = $(shell find $(srcdir)/images -name '*.*')
 COOL_IMAGES_DST = $(patsubst $(srcdir)/%,$(DIST_FOLDER)/%,$(COOL_IMAGES_SRC))
 COOL_IMAGES_CUSTOM_SRC = $(shell if test -n "$(CUSTOM_ICONS_DIRECTORY)"; then find $(CUSTOM_ICONS_DIRECTORY) -name '*.*'; fi)
 COOL_IMAGES_CUSTOM_DST = $(patsubst $(CUSTOM_ICONS_DIRECTORY)/%,$(DIST_FOLDER)/images/%,$(COOL_IMAGES_CUSTOM_SRC))
-COOL_L10N_SRC = $(shell find $(srcdir)/l10n -name '*.*')
+COOL_L10N_SRC = $(shell find $(srcdir)/l10n -name '*.json')
 if !ENABLE_MOBILEAPP
 COOL_L10N_DST =  $(patsubst $(srcdir)/l10n/%,$(DIST_FOLDER)/l10n/%,$(COOL_L10N_SRC))
 endif
@@ -160,6 +172,20 @@ COOL_CSS_M4 = $(strip $(foreach file,$(COOL_CSS),$(notdir $(file))))
 
 $(eval $(call file_targets,$(COOL_CSS)))
 
+WORKER_NODE_MODULES_JS =\
+	node_modules/fzstd/umd/index.js
+
+$(DIST_FOLDER)/src/layer/tile/TileWorker.js: \
+	$(srcdir)/src/layer/tile/CanvasTileWorker.js.m4 \
+	$(srcdir)/src/layer/tile/CanvasTileWorkerSrc.js \
+	$(WORKER_NODE_MODULES_JS)
+
+	@echo "Generating TileWorker.js..."
+	m4 -PE -DDEBUG=$(ENABLE_DEBUG) \
+		-DNODE_MODULES_JS=$(subst $(SPACE),$(COMMA),$(WORKER_NODE_MODULES_JS)) \
+		-DWORKER_JS=$(srcdir)/src/layer/tile/CanvasTileWorkerSrc.js \
+		$(srcdir)/src/layer/tile/CanvasTileWorker.js.m4 > $@
+
 NODE_MODULES_JS =\
 	$(if $(IS_SEPARATE),node_modules/hammerjs/hammer.js,node_modules/hammerjs/hammer.min.js) \
 	node_modules/dompurify/dist/purify.min.js \
@@ -227,7 +253,7 @@ COOL_JS_LST =\
 	src/layer/tile/SheetSwitch.ts \
 	src/layer/Layer.js \
 	src/layer/tile/SheetGeometry.ts \
-	src/layer/tile/Premult.ts \
+	src/layer/tile/CanvasTileUtils.ts \
 	src/canvas/CanvasSectionProps.js \
 	src/canvas/CanvasSectionContainer.ts \
 	src/canvas/CanvasSectionObject.ts \
@@ -236,6 +262,7 @@ COOL_JS_LST =\
 	src/canvas/sections/CalcGridSection.ts \
 	src/canvas/sections/SplitSection.ts \
 	src/canvas/sections/PixelGridSection.ts \
+	src/canvas/sections/PreloadMapSection.ts \
 	src/canvas/sections/TilesSection.ts \
 	src/canvas/sections/AutoFillMarkerSection.ts \
 	src/canvas/sections/HTMLObjectSection.ts \
@@ -345,12 +372,15 @@ COOL_JS_LST =\
 	src/control/Control.LokDialog.js \
 	src/control/Control.AlertDialog.js \
 	src/control/Control.Tooltip.js \
+	src/control/Control.ESignature.ts \
+	src/control/Control.ESignatureDialog.ts \
 	src/control/ColorPicker.ts \
 	src/control/jsdialog/Component.Toolbar.ts \
 	src/control/jsdialog/Definitions.Menu.ts \
 	src/control/jsdialog/Util.Dropdown.js \
 	src/control/jsdialog/Util.Events.ts \
 	src/control/jsdialog/Util.KeyboardGridNavigation.ts \
+	src/control/jsdialog/Util.KeyboardListNavigation.ts \
 	src/control/jsdialog/Util.FocusCycle.js \
 	src/control/jsdialog/Util.MessageRouter.ts \
 	src/control/jsdialog/Util.ModalHelper.js \
@@ -364,6 +394,7 @@ COOL_JS_LST =\
 	src/control/jsdialog/Widget.ColorPicker.ts \
 	src/control/jsdialog/Widget.Combobox.js \
 	src/control/jsdialog/Widget.Containers.ts \
+	src/control/jsdialog/Widget.DropDown.ts \
 	src/control/jsdialog/Widget.DrawingArea.js \
 	src/control/jsdialog/Widget.FormulabarEdit.js \
 	src/control/jsdialog/Widget.Frame.js \
@@ -377,7 +408,7 @@ COOL_JS_LST =\
 	src/control/jsdialog/Widget.ScrolledWindow.js \
 	src/control/jsdialog/Widget.SidebarContainers.ts \
 	src/control/jsdialog/Widget.Timefield.js \
-	src/control/jsdialog/Widget.TreeView.js \
+	src/control/jsdialog/Widget.TreeView.ts \
 	src/control/Control.JSDialog.js \
 	src/control/Control.JSDialogBuilder.js \
 	src/control/Control.MobileWizardBuilder.js \
@@ -434,7 +465,7 @@ COOL_JS_LST =\
 	src/slideshow/SimpleTextureRenderer.ts \
 	src/slideshow/StaticTextRenderer.ts \
 	src/slideshow/PauseTimer.ts \
-	src/slideshow/PerformTransition.ts \
+	src/slideshow/TransitionFactory.ts \
 	src/slideshow/CanvasLoader.ts \
 	src/slideshow/Operation.ts \
 	src/slideshow/Primitive.ts \
@@ -475,6 +506,7 @@ COOL_JS_LST =\
     src/slideshow/engine/animationnodes/AnimationBaseNode.ts \
     src/slideshow/engine/animationnodes/AnimationColorNode.ts \
     src/slideshow/engine/animationnodes/AnimationNodeInfo.ts \
+    src/slideshow/engine/animationnodes/AnimationPathMotionNode.ts \
     src/slideshow/engine/animationnodes/AnimationSetNode.ts \
     src/slideshow/engine/animationnodes/AnimationTransformNode.ts \
     src/slideshow/engine/animationnodes/AnimationTransitionFilterNode.ts \
@@ -546,14 +578,14 @@ COOL_TS_SRC = $(filter %.ts,$(COOL_JS_WEBORDER))
 
 # beware these are not helpfully ordered
 COOL_TS_JS_DST = $(patsubst src/%.ts,$(DIST_FOLDER)/src/%.js,$(COOL_TS_SRC))
-COOL_JS_DST = $(patsubst src/%.js,$(DIST_FOLDER)/src/%.js,$(COOL_JS_SRC)) $(COOL_TS_JS_DST)
+COOL_JS_DST = $(patsubst src/%.js,$(DIST_FOLDER)/src/%.js,$(COOL_JS_SRC)) $(COOL_TS_JS_DST) $(DIST_FOLDER)/src/layer/tile/TileWorker.js
 # should be no lingering / obsolete files:
 COOL_ASSERT_INTERSECT = $(filter $(COOL_JS_SRC), $(patsubst %.ts,%.js,$(COOL_TS_SRC)))
 
 COMMA := ,
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
-COOL_VERSION = $(shell cd $(srcdir) && git log -1 --pretty=format:"%h")
+COOL_VERSION = $(shell cd $(srcdir) && git log -1 --format=%h --abbrev=10)
 INTERMEDIATE_DIR ?= $(if $(IS_SEPARATE),$(abs_builddir)/debug,$(abs_builddir)/release)
 
 EXTRA_DIST = $(shell find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './l10n/*' | sed 's/.\///')
@@ -618,7 +650,7 @@ define global_file
 endef
 
 define run_eslint_check
-	@$(NODE) node_modules/eslint/bin/eslint.js \
+	$(QUIET_ESLINT) $(NODE) node_modules/eslint/bin/eslint.js \
 		--resolve-plugins-relative-to $(abs_builddir) \
 		--ignore-path $(srcdir)/.eslintignore \
 		--config .eslintrc \
@@ -626,9 +658,10 @@ define run_eslint_check
 endef
 
 define run_prettier_check
-	@$(NODE) node_modules/.bin/prettier \
+	$(QUIET_PRETTIER) $(NODE) node_modules/.bin/prettier \
 		--ignore-path $(srcdir)/.prettierignore \
 		--ignore-path $(srcdir)/.beforeprettier \
+		--log-level warn \
 		$(1)
 endef
 
@@ -665,7 +698,7 @@ endif
 
 $(TYPESCRIPT_JS_DIR)/%.js: $(srcdir)/%.ts
 	@mkdir -p $(dir $@)
-	$(builddir)/node_modules/typescript/bin/tsc --outFile $@ $<
+	$(QUIET_TSC) $(builddir)/node_modules/typescript/bin/tsc --outFile $@ $<
 
 build-cool: \
 	$(COOL_L10N_DST) \
@@ -703,7 +736,6 @@ $(DIST_FOLDER)/admin-bundle.js: $(COOL_ADMIN_DST) \
 
 $(INTERMEDIATE_DIR)/admin-src.js: $(COOL_ADMIN_TS_JS) $(COOL_ADMIN_JS)
 	@mkdir -p $(dir $@)
-	@echo "Checking for admin JS errors..."
 	$(call run_eslint_check,--ignore-pattern $(COOL_ADMIN_TS_JS) $(srcdir)/admin/src)
 	$(call run_prettier_check,--debug-check $(srcdir)/admin/src)
 	@awk 'FNR == 1 {print ""} 1' $(COOL_ADMIN_TS_JS) $(patsubst %.js,$(srcdir)/%.js,$(COOL_ADMIN_JS)) > $@
@@ -713,7 +745,6 @@ $(INTERMEDIATE_DIR)/cool-src.js: tscompile.done $(call prereq_cool) $(COOL_JS_DS
 	$(abs_top_srcdir)/scripts/unocommands.py --check $(abs_top_srcdir)
 	@printf "Checking for obsolete JS build intermediates in this makefile... "
 	@if ! test "z$(COOL_ASSERT_INTERSECT)" == "z"; then echo; echo "Error: please remove obsolete files:"; echo "$(COOL_ASSERT_INTERSECT)"; exit 1; else echo "clean"; fi
-	@echo "Checking for cool JS errors..."
 	$(call run_eslint_check,$(srcdir)/src $(srcdir)/js)
 	$(call run_prettier_check,--debug-check $(srcdir)/src $(srcdir)/js/global.js)
 	@echo "Bundling cool..."
@@ -733,19 +764,22 @@ $(DIST_FOLDER)/global.js: $(srcdir)/js/global.js
 	@mkdir -p $(dir $@)
 	$(call global_file)
 
-$(INTERMEDIATE_DIR)/COOL_JS.m4:
-	@rm -f COOL_JS.m4
-	$(foreach file,$(NODE_MODULES_JS) $(COOL_LIBS_JS) $(patsubst %.ts,%.js,$(COOL_JS_WEBORDER)), $(shell echo -n $(file), >> $(INTERMEDIATE_DIR)/COOL_JS.m4))
-# remove last ","
-	@truncate -s -1 $(INTERMEDIATE_DIR)/COOL_JS.m4
+$(INTERMEDIATE_DIR)/COOL_JS.m4.jslist: $(COOL_JS_DST)
+	echo $(COOL_JS_DST) > $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist.tmp
+	if cmp -s $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist.tmp $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist; then rm $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist.tmp; else mv $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist.tmp $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist; fi
+
+$(INTERMEDIATE_DIR)/COOL_JS.m4: $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist
+	$(foreach file,$(NODE_MODULES_JS) $(COOL_LIBS_JS) $(patsubst %.ts,%.js,$(COOL_JS_WEBORDER)), $(shell echo -n $(file), >> $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp))
+	@truncate -s -1 $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp
+	@mv $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp $(INTERMEDIATE_DIR)/COOL_JS.m4
 
 $(DIST_FOLDER)/cool.html: $(srcdir)/html/cool.html.m4 \
 	$(COOL_HTML_DST) \
 	$(COOL_WELCOME_DST) \
 	$(DIST_FOLDER)/bundle.css \
 	$(DIST_FOLDER)/global.js \
-	$(DIST_FOLDER)/bundle.js \
-	$(INTERMEDIATE_DIR)/COOL_JS.m4
+	$(INTERMEDIATE_DIR)/COOL_JS.m4 \
+	| $(DIST_FOLDER)/bundle.js
 
 	@echo "Generating cool.html..."
 	m4 -PE -I $(INTERMEDIATE_DIR) \
@@ -812,7 +846,7 @@ SourceMap=--allowJs true --sourceMap true --inlineSources true
 endif
 
 tscompile.done: $(COOL_JS_SRC) $(COOL_TS_SRC)
-	$(builddir)/node_modules/typescript/bin/tsc --typeRoots $(builddir)/node_modules/@types --outDir $(DIST_FOLDER)/src --rootDir $(srcdir)/src --checkJs false --project $(srcdir)/tsconfig.json $(SourceMap)
+	$(QUIET_TSC) $(builddir)/node_modules/typescript/bin/tsc --typeRoots $(builddir)/node_modules/@types --outDir $(DIST_FOLDER)/src --rootDir $(srcdir)/src --checkJs false --project $(srcdir)/tsconfig.json $(SourceMap)
 	@touch $@
 
 $(COOL_TS_JS_DST): tscompile.done
@@ -881,6 +915,9 @@ install-data-hook:
 		--exclude='multidocs.html' \
 		--exclude='tsconfig.tsbuildinfo' \
 		dist $(DESTDIR)$(pkgdatadir)/browser/;
+	mkdir -p $(DESTDIR)$(pkgdatadir)/browser/dist/src/layer/tile;
+	cp -a dist/src/layer/tile/CanvasTileUtils.js $(DESTDIR)$(pkgdatadir)/browser/dist/src/layer/tile/CanvasTileUtils.js;
+	cp -a dist/src/layer/tile/TileWorker.js $(DESTDIR)$(pkgdatadir)/browser/dist/src/layer/tile/TileWorker.js;
 if ENABLE_WASM
 	find $(DESTDIR)$(pkgdatadir)/browser/dist -type f ! -iname "*.png" -exec brotli --force {} \;
 endif
@@ -894,30 +931,38 @@ libs:
 pot:
 	xgettext --from-code=UTF-8 --language=JavaScript --keyword=_ --output=po/templates/cool-ui.pot \
 		admin/admin.strings.js \
+		admin/src/AdminClusterOverview.js \
 		admin/src/AdminSocketAnalytics.js \
 		admin/src/AdminSocketBase.js \
 		admin/src/AdminSocketOverview.js \
 		admin/src/AdminSocketSettings.js \
 		admin/src/Util.js \
 		js/global.js \
+		src/canvas/sections/CommentListSection.ts \
+		src/canvas/sections/CommentSection.ts \
+		src/canvas/sections/ShapeHandlesSection.ts \
+		src/canvas/sections/URLPopUpSection.ts \
 		src/control/ColorPicker.ts \
 		src/control/Control.AboutDialog.ts \
+		src/control/Control.AddressInputField.ts \
 		src/control/Control.AlertDialog.js \
 		src/control/Control.Command.js \
 		src/control/Control.ContextMenu.js \
 		src/control/Control.DocumentNameInput.js \
 		src/control/Control.DocumentRepair.js \
 		src/control/Control.DownloadProgress.js \
+		src/control/Control.ESignature.ts \
+		src/control/Control.ESignatureDialog.ts \
 		src/control/Control.FormulaBarJSDialog.js \
 		src/control/Control.IdleHandler.ts \
+		src/control/Control.JSDialog.js \
 		src/control/Control.JSDialogBuilder.js \
 		src/control/Control.LanguageDialog.js \
 		src/control/Control.Menubar.js \
 		src/control/Control.MobileBottomBar.js \
+		src/control/Control.MobileSearchBar.ts \
 		src/control/Control.MobileTopBar.ts \
 		src/control/Control.MobileWizardBuilder.js \
-		src/control/Control.MobileWizardWindow.js \
-		src/control/Control.MobileWizard.js \
 		src/control/Control.Notebookbar.js \
 		src/control/Control.NotebookbarBuilder.js \
 		src/control/Control.NotebookbarCalc.js \
@@ -926,12 +971,10 @@ pot:
 		src/control/Control.NotebookbarWriter.js \
 		src/control/Control.PartsPreview.js \
 		src/control/Control.PresentationBar.js \
-		src/control/Control.Scroll.Annotation.js \
-		src/control/Control.MobileSearchBar.ts \
-		src/control/Control.ServerAuditDialog.ts \
 		src/control/Control.SaveState.ts \
+		src/control/Control.Scroll.Annotation.js \
+		src/control/Control.ServerAuditDialog.ts \
 		src/control/Control.SheetsBar.js \
-		src/control/Control.Sidebar.ts \
 		src/control/Control.StatusBar.js \
 		src/control/Control.Tabs.js \
 		src/control/Control.Toolbar.js \
@@ -942,172 +985,38 @@ pot:
 		src/control/Parts.js \
 		src/control/Permission.js \
 		src/control/Ruler.js \
-		src/control/VRuler.ts \
 		src/control/Signing.js \
 		src/control/Toolbar.js \
-		src/control/jsdialog/Component.Toolbar.ts \
+		src/control/VRuler.ts \
 		src/control/jsdialog/Definitions.Menu.ts \
-		src/control/jsdialog/Util.Dropdown.js \
-		src/control/jsdialog/Util.Events.ts \
-		src/control/jsdialog/Util.KeyboardGridNavigation.ts \
-		src/control/jsdialog/Util.FocusCycle.js \
-		src/control/jsdialog/Util.MessageRouter.ts \
-		src/control/jsdialog/Util.ModalHelper.js \
-		src/control/jsdialog/Util.OnDemandRenderer.ts \
-		src/control/jsdialog/Util.ScrollableBar.ts \
 		src/control/jsdialog/Util.SnackbarController.ts \
-		src/control/jsdialog/Util.StateChange.ts \
-		src/control/jsdialog/Widget.ButtonBox.ts \
-		src/control/jsdialog/Widget.Calendar.js \
-		src/control/jsdialog/Widget.ColorPickerButton.js \
 		src/control/jsdialog/Widget.ColorPicker.ts \
-		src/control/jsdialog/Widget.Combobox.js \
-		src/control/jsdialog/Widget.Containers.ts \
-		src/control/jsdialog/Widget.DrawingArea.js \
-		src/control/jsdialog/Widget.FormulabarEdit.js \
-		src/control/jsdialog/Widget.Frame.js \
 		src/control/jsdialog/Widget.HTMLContent.ts \
-		src/control/jsdialog/Widget.IconView.ts \
-		src/control/jsdialog/Widget.MenuButton.js \
 		src/control/jsdialog/Widget.MobileBorderSelector.js \
-		src/control/jsdialog/Widget.MobileTabControl.js \
-		src/control/jsdialog/Widget.MultilineEdit.js \
-		src/control/jsdialog/Widget.Progressbar.js \
-		src/control/jsdialog/Widget.ScrolledWindow.js \
 		src/control/jsdialog/Widget.SidebarContainers.ts \
-		src/control/jsdialog/Widget.Timefield.js \
-		src/control/jsdialog/Widget.TreeView.js \
-		src/slideshow/SlideCache.ts \
-		src/slideshow/SlideCompositor.ts \
-		src/slideshow/LayerRenderer.ts \
-		src/slideshow/LayerDrawing.ts \
-		src/slideshow/LayersCompositor.ts \
-		src/slideshow/RenderContext.ts \
-		src/slideshow/SlideRenderer.ts \
-		src/slideshow/SlideShowPresenter.ts \
-		src/slideshow/SimpleTextureRenderer.ts \
-		src/slideshow/StaticTextRenderer.ts \
-		src/slideshow/PauseTimer.ts \
-		src/slideshow/PerformTransition.ts \
-        src/slideshow/engine/ActivityFactory.ts \
-        src/slideshow/engine/ActivityQueue.ts \
-        src/slideshow/engine/AnimationFactory.ts \
-        src/slideshow/engine/Duration.ts \
-        src/slideshow/engine/Effect.ts \
-        src/slideshow/engine/ElapsedTime.ts \
-        src/slideshow/engine/EventMultiplexer.ts \
-        src/slideshow/engine/Event.ts \
-        src/slideshow/engine/FrameSynchronization.ts \
-        src/slideshow/engine/InteractiveAnimationSequence.ts \
-        src/slideshow/engine/MetaPresentation.ts \
-        src/slideshow/engine/MetaSlide.ts \
-        src/slideshow/engine/NextEffectEventArray.ts \
-        src/slideshow/engine/SlideAnimations.ts \
-        src/slideshow/engine/SlideChangeBase.ts \
-        src/slideshow/engine/SlideShowHandler.ts \
-        src/slideshow/engine/SlideShowNavigator.ts \
-        src/slideshow/engine/SlideTransition.ts \
-        src/slideshow/engine/SourceEventElement.ts \
-        src/slideshow/engine/TimerEventQueue.ts \
-        src/slideshow/engine/Timing.ts \
-        src/slideshow/engine/tools.ts \
-        src/slideshow/engine/activities/AnimationActivity.ts \
-        src/slideshow/engine/activities/ActivityBase.ts \
-        src/slideshow/engine/activities/SimpleContinuousActivityBase.ts \
-        src/slideshow/engine/activities/ContinuousActivityBase.ts \
-        src/slideshow/engine/activities/ContinuousKeyTimeActivityBase.ts \
-        src/slideshow/engine/activities/DiscreteActivityBase.ts \
-        src/slideshow/engine/activities/FromToByActivity.ts \
-        src/slideshow/engine/activities/SetActivity.ts \
-        src/slideshow/engine/activities/SimpleActivity.ts \
-        src/slideshow/engine/activities/ValueListActivity.ts \
-        src/slideshow/engine/animationnodes/BaseNode.ts \
-        src/slideshow/engine/animationnodes/AnimationBaseNode.ts \
-        src/slideshow/engine/animationnodes/AnimationColorNode.ts \
-        src/slideshow/engine/animationnodes/AnimationNodeInfo.ts \
-        src/slideshow/engine/animationnodes/AnimationSetNode.ts \
-        src/slideshow/engine/animationnodes/AnimationTransformNode.ts \
-        src/slideshow/engine/animationnodes/AnimationTransitionFilterNode.ts \
-        src/slideshow/engine/animationnodes/BaseContainerNode.ts \
-        src/slideshow/engine/animationnodes/NodeContext.ts \
-        src/slideshow/engine/animationnodes/PropertyAnimationNode.ts \
-        src/slideshow/engine/AnimatedElement.ts \
-        src/slideshow/TransitionsInfo.ts \
-        src/slideshow/Transition2d.ts \
-        src/slideshow/transition/ClippingTransition.ts \
-		src/slideshow/transition/FadeTransition.ts \
-		src/slideshow/CanvasLoader.ts \
-		src/slideshow/Transition3d.ts \
-		src/slideshow/Operation.ts \
-		src/slideshow/Primitive.ts \
-		src/slideshow/types.ts \
-		src/slideshow/transition/PlusTransition.ts \
-		src/slideshow/transition/CircleTransition.ts \
-		src/slideshow/transition/VenetianTransition.ts \
-		src/slideshow/transition/WedgeTransition.ts \
-		src/slideshow/transition/BoxTransition.ts \
-		src/slideshow/transition/OvalTransition.ts\
-		src/slideshow/transition/DiamondTransition.ts\
-		src/slideshow/transition/CheckersTransition.ts \
-		src/slideshow/transition/PushTransition.ts \
-		src/slideshow/transition/SimpleDissolveTransition.ts \
-		src/slideshow/transition/BarsTransition.ts \
-		src/slideshow/transition/CutTransition.ts \
-		src/slideshow/transition/WheelTransition.ts \
-		src/slideshow/transition/UncoverTransition.ts \
-		src/slideshow/transition/CoverTransition.ts \
-		src/slideshow/transition/SplitTransition.ts \
-		src/slideshow/transition/WipeTransition.ts \
-		src/slideshow/transition/IrisWipeTransition.ts \
-		src/slideshow/transition/EllipseWipeTransition.ts \
-		src/slideshow/transition/SlideWipeTransition.ts \
-		src/slideshow/transition/DiagonalTransition.ts \
-		src/slideshow/transition/PushWipeTransition.ts \
-		src/slideshow/transition/CombTransition.ts \
-		src/slideshow/transition/BarWipeTransition.ts \
-		src/slideshow/transition/NoTransition.ts \
-		src/slideshow/transition3d/SimpleTransition.ts \
-		src/slideshow/transition3d/CubeTransition.ts \
-		src/slideshow/transition3d/HelixTransition.ts \
-		src/slideshow/transition3d/FallTransition.ts \
-		src/slideshow/transition3d/ReflectionTransition.ts \
-		src/slideshow/transition3d/RochadeTransition.ts \
-		src/slideshow/transition3d/TurnDownTransition.ts \
-		src/slideshow/transition3d/Venetian3dTransition.ts \
-		src/slideshow/transition3d/TurnAroundTransition.ts \
-		src/slideshow/transition3d/PermTextureTransition.ts \
-		src/slideshow/transition3d/StaticNoiseTransition.ts \
-		src/slideshow/transition3d/RippleTransition.ts \
-		src/slideshow/transition3d/NewsFlashTransition.ts \
-		src/slideshow/transition3d/DissolveTransition3d.ts \
-		src/slideshow/transition3d/FlipTilesTransition.ts \
-		src/slideshow/transition3d/MicsShapeWipeTransition.ts \
-		src/slideshow/operation/RotateAndScaleDepth.ts \
-		src/slideshow/operation/SEllipseTranslate.ts \
-		src/slideshow/operation/SRotate.ts \
-		src/slideshow/operation/SScale.ts \
-		src/slideshow/operation/STranslate.ts \
-		src/core/Socket.js \
 		src/core/Debug.js \
+		src/core/Socket.js \
+		src/docdispatcher.ts \
 		src/docstate.js \
 		src/docstatefunctions.js \
-		src/docdispatcher.ts \
-		src/app/DocUtil.ts \
-		src/app/DocEvents.ts \
-		src/app/GraphicSelectionMiddleware.ts \
+		src/dom/NotebookbarAccessibility.js \
 		src/errormessages.js \
+		src/layer/marker/A11yTextInput.js \
+		src/layer/marker/TextInput.js \
 		src/layer/tile/CanvasTileLayer.js \
-		src/canvas/sections/CommentListSection.ts \
-		src/canvas/sections/CommentSection.ts \
-		src/canvas/sections/URLPopUpSection.ts \
 		src/main.js \
 		src/map/Clipboard.js \
 		src/map/Map.js \
 		src/map/handler/Map.Feedback.js \
 		src/map/handler/Map.FileInserter.js \
-		src/map/handler/Map.Keyboard.js \
+		src/map/handler/Map.Print.js \
 		src/map/handler/Map.SlideShow.js \
-		src/map/handler/Map.WOPI.js
+		src/map/handler/Map.VersionBar.js \
+		src/map/handler/Map.WOPI.js \
+		src/map/handler/Map.Welcome.js \
+		src/slideshow/PauseTimer.ts \
+		src/slideshow/PresenterConsole.js \
+		src/slideshow/SlideShowPresenter.ts
 
 	html2po --pot --input=html/cool-help.html --output=po/templates/cool-help.pot --duplicates=merge
 	html2po --pot --input=descriptions/google-play.html --output=po/templates/descriptions.pot --duplicates=merge --keepcomments
@@ -1132,6 +1041,7 @@ CLEANFILES = tscompile.done $(INTERMEDIATE_DIR)/cool-src.js $(DIST_FOLDER)/bundl
 
 ctags:
 	@$(CTAGS) --language-force=JavaScript $(COOL_JS_SRC) $(srcdir)/js/global.js
+	@$(CTAGS) --language-force=TypeScript --extra=+q --append=yes $(COOL_TS_SRC)
 
 $(abs_srcdir)/jsconfig.json:
 	@printf "{\n \

@@ -15,11 +15,9 @@ html[dir='rtl'] .sub-menu-arrow {
 /* Related to cool.css */
 #toolbar-hamburger {
 	width: 36px !important;
-	height: 42px;
 	position: relative;
 	z-index: 1002;
-	display: flex;
-	align-items: center; /* Align items vertically */
+	align-self: center; /* Align items vertically */
 }
 
 .logo {
@@ -46,6 +44,15 @@ html[dir='rtl'] .sub-menu-arrow {
 }
 .editmode-on {
 	background: url('images/lc_listitem-selected.svg') no-repeat center / 28px !important;
+}
+
+/* Permisson mode status */
+.mobile .ui-badge {
+	background-color: transparent;
+	color: var(--color-text-lighter);
+}
+.status-edit-mode {
+	display: none;
 }
 
 
@@ -187,9 +194,6 @@ textarea.cool-annotation-textarea {
 	padding-bottom: 0px;
 	background: transparent;
 	align-self: end;
-}
-nav:not(.spreadsheet-color-indicator) ~ #toolbar-wrapper #toolbar-up.w2ui-toolbar {
-	border-color: transparent;
 }
 .formulabar.unotoolbutton {
 	justify-self: center;
@@ -424,11 +428,6 @@ nav:not(.spreadsheet-color-indicator) ~ #toolbar-wrapper #toolbar-up.w2ui-toolba
 	overflow-y: auto !important;
 }
 
-/* Disable tooltips when on touch devices */
-.w2ui-tag .w2ui-tag-top {
-	display: none !important;
-}
-
 .impress-comment-highlight {
 	filter: grayscale(1);
 }
@@ -502,19 +501,17 @@ nav:not(.spreadsheet-color-indicator) ~ #toolbar-wrapper #toolbar-up.w2ui-toolba
 	height: auto;
 	border-color: var(--color-border);
 }
-#mobile-wizard-content #MacroSelectorDialog #categories > .ui-treeview-body > .mobile-wizard li {
+#mobile-wizard-content #MacroSelectorDialog #categories > .ui-treeview-entry {
 	border-bottom: 1px solid var(--color-border);
 }
 #mobile-wizard-content #MacroSelectorDialog #commands {
 	margin-bottom: 6px;
+	min-height: auto;
 }
 #mobile-wizard-content #MacroSelectorDialog #commands.selected {
 	border-color: var(--color-primary-dark);
 }
-#mobile-wizard-content #MacroSelectorDialog #commands > .mobile-wizard.ui-treeview-body {
-	min-height: auto;
-}
-#mobile-wizard-content #MacroSelectorDialog #commands.empty > .mobile-wizard.ui-treeview-body::after {
+#mobile-wizard-content #MacroSelectorDialog #commands.empty ::after {
 	content: '…';
 	width: 22px;
 	height: 22px;

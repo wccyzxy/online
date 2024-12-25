@@ -166,6 +166,7 @@ class CanvasSectionContainer {
 	*/
 
 	private sections: Array<any> = new Array(0);
+	private lastDocumentTopLeft: Array<number> = [0, -1];
 	private documentTopLeft: Array<number> = [0, 0];
 	private documentBottomRight: Array<number> = [0, 0];
 	private canvas: HTMLCanvasElement;
@@ -217,8 +218,6 @@ class CanvasSectionContainer {
 	private frameCount: number = null; // Frame count of the current animation.
 	private duration: number = null; // Duration for the animation.
 	private elapsedTime: number = null; // Time that passed since the animation started.
-	private stoppingFunctionList: Array<EventListener>; // Event listeners need to be removed from the canvas object. So we keep track of their functions.
-	private stoppingEventTypes: Array<string>; // Events those stop the animation.
 
 	constructor (canvasDOMElement: HTMLCanvasElement, disableDrawing?: boolean) {
 		this.canvas = canvasDOMElement;
@@ -292,6 +291,12 @@ class CanvasSectionContainer {
 
 	public getViewSize (): Array<number> {
 		return [this.canvas.width, this.canvas.height];
+	}
+
+	public getLastPanDirection() : Array<number> {
+		var dx : number = this.documentTopLeft[0] - this.lastDocumentTopLeft[0];
+		var dy : number = this.documentTopLeft[1] - this.lastDocumentTopLeft[1];
+		return [ Math.sign(dx), Math.sign(dy) ];
 	}
 
 	public setBackgroundColorMode(useCSSVars: boolean = true) {
@@ -568,8 +573,18 @@ class CanvasSectionContainer {
 	}
 
 	public setDocumentBounds (points: Array<number>) {
-		this.documentTopLeft[0] = Math.round(points[0]);
-		this.documentTopLeft[1] = Math.round(points[1]);
+		var x: number = Math.round(points[0]);
+		var y: number = Math.round(points[1]);
+
+		// maintain a view of where we're panning to.
+		if (this.documentTopLeft[0] != x ||
+		    this.documentTopLeft[1] != y) {
+			this.lastDocumentTopLeft[0] = this.documentTopLeft[0];
+			this.lastDocumentTopLeft[1] = this.documentTopLeft[1];
+		}
+
+		this.documentTopLeft[0] = x;
+		this.documentTopLeft[1] = y;
 
 		this.documentBottomRight[0] = Math.round(points[2]);
 		this.documentBottomRight[1] = Math.round(points[3]);
@@ -1191,7 +1206,21 @@ class CanvasSectionContainer {
 		}
 	}
 
-	private onMouseWheel (e: WheelEvent) {
+	public extendAnimationDuration(extendMs: number) {
+		if (this.getAnimatingSectionName()) { // Is animating.
+			this.duration += extendMs;
+		}
+	}
+
+	public getAnimationDuration(): number {
+		return this.duration;
+	}
+
+	public getScrollLineHeight() {
+		return this.scrollLineHeight;
+	}
+
+	public onMouseWheel (e: WheelEvent) {
 		var point = this.convertPositionToCanvasLocale(e);
 		var delta: Array<number>;
 
@@ -1333,6 +1362,15 @@ class CanvasSectionContainer {
 		newWidth = Math.floor(newWidth * app.dpiScale);
 		newHeight = Math.floor(newHeight * app.dpiScale);
 
+		if (this.right === newWidth && this.bottom === newHeight)
+			return;
+
+		// Drawing may happen asynchronously so backup the old contents to avoid
+		// showing a blank canvas.
+		var oldImageData: ImageData = null;
+		if (this.paintedEver && this.canvas.width > 0 && this.canvas.height > 0)
+			oldImageData = this.context.getImageData(0, 0, this.canvas.width, this.canvas.height);
+
 		this.canvas.width = newWidth;
 		this.canvas.height = newHeight;
 
@@ -1345,9 +1383,10 @@ class CanvasSectionContainer {
 		app.canvasSize.pX = newWidth;
 		app.canvasSize.pY = newHeight;
 
-		// Avoid black default background if canvas was never painted
-		// since construction.
-		if (!this.paintedEver)
+		// Avoid black default background.
+		if (oldImageData)
+			this.context.putImageData(oldImageData, 0, 0);
+		else
 			this.clearCanvas();
 
 		this.clearMousePositions();
@@ -2053,10 +2092,6 @@ class CanvasSectionContainer {
 			requestAnimationFrame(this.animate.bind(this));
 		}
 		else {
-			for (var i: number = 0; i < this.stoppingFunctionList.length; i++) {
-				this.canvas.removeEventListener(this.stoppingEventTypes[i], this.stoppingFunctionList[i], true);
-			}
-
 			var section: CanvasSectionObject = this.getSectionWithName(this.getAnimatingSectionName());
 			if (section) {
 				section.isAnimating = false;
@@ -2068,12 +2103,6 @@ class CanvasSectionContainer {
 
 			this.drawSections();
 		}
-	}
-
-	private createStoppingFunction () {
-		return function () {
-			this.continueAnimating = false;
-		}.bind(this);
 	}
 
 	// Resets animation duration. Not to be called directly. Instead, use (inside section class) this.resetAnimation()
@@ -2108,13 +2137,6 @@ class CanvasSectionContainer {
 			For now, only one section can start animations at a time.
 
 			options (possible values are separated by the '|' char):
-				// Developer can specify the events those will stop animating.
-				// Important note: User shouldn't depend on the order of the events if they assign a stopping handler to an event.
-					Let's assume a stopping function is bound to 'onclick' event.
-					For now, most probably, onclick event will first be propagated to sections, then animation will stop.
-					But when Leaflet is removed, animation will stop first and then onclick event will be propagated to sections.
-
-				stoppingEvents: ['click', 'mousemove' ..etc] // Events should match the real keywords.
 				// Developer can set the duration for the animation, in milliseconds. There are also other ways to stop the animation.
 				duration: 2000 | null // 2 seconds | null.
 		*/
@@ -2127,17 +2149,6 @@ class CanvasSectionContainer {
 			this.duration = options.duration ? options.duration: null;
 			this.elapsedTime = 0;
 			this.frameCount = 0;
-
-			this.stoppingFunctionList = new Array<EventListener>(0);
-			this.stoppingEventTypes = new Array<string>(0);
-
-			if (options.stoppingEvents) {
-				for (var i: number = 0; i < options.stoppingEvents.length; i++) {
-					this.stoppingEventTypes.push(options.stoppingEvents[i]);
-					this.stoppingFunctionList.push(this.createStoppingFunction());
-					this.canvas.addEventListener(options.stoppingEvents[i], this.stoppingFunctionList[i], true);
-				}
-			}
 
 			this.animate(performance.now());
 			return true;

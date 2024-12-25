@@ -7,7 +7,10 @@
 
 #pragma once
 
-#include <atomic>
+#include <common/StateEnum.hpp>
+#include <common/Util.hpp>
+#include <net/Socket.hpp>
+
 #include <cassert>
 #include <chrono>
 #include <map>
@@ -15,10 +18,6 @@
 #include <string>
 #include <vector>
 
-#include <common/StateEnum.hpp>
-#include "Util.hpp"
-#include "NetUtil.hpp"
-#include "net/Socket.hpp"
 #include <Poco/Exception.h>
 
 #include <test/testlog.hpp>
@@ -421,9 +420,6 @@ public:
     /// Manipulate and modify the configuration before any usage.
     virtual void configure(Poco::Util::LayeredConfiguration& /* config */) {}
 
-    /// Manipulate and modify the net::Defaults for before any usage.
-    virtual void configNet(net::Defaults& /* defaults */) {}
-
     /// Main-loop reached, time for testing.
     /// Invoked from coolwsd's main thread.
     void invokeTest()
@@ -480,6 +476,18 @@ public:
             exitTest(TestResult::Failed, "kit segfault");
     }
 
+    /// When we get a killed message from forkit; override to test crashes ...
+    virtual void kitKilled(int /* count */)
+    {
+    }
+
+    /// When we get killed by oom message from forkit; override to test crashes ...
+    virtual void kitOomKilled(int /* count */)
+    {
+        if (get().isUnitTesting())
+            exitTest(TestResult::Failed, "kit killed by oom");
+    }
+
     /// Intercept createStorage
     virtual bool createStorage(const Poco::URI& /* uri */,
                                const std::string& /* jailRoot */,
@@ -493,6 +501,15 @@ public:
     {
         return false;
     }
+
+    // ---------------- ServerSocket hooks ----------------
+    /// Simulate `::accept` errors for external `ServerSocket::accept`. Implement unrecoverable errors by throwing an exception.
+    virtual bool simulateExternalAcceptError()
+    {
+        return false;
+    }
+    /// Simulate exceptions during `StreamSocket` constructor for external `ServerSocket::accept`.
+    virtual void simulateExternalSocketCtorException(std::shared_ptr<Socket>& /*socket*/) { }
 
     // ---------------- TileCache hooks ----------------
     /// Called before the lookupTile call returns. Should always be called to fire events.
@@ -674,7 +691,6 @@ private:
 #define TRANSITION_STATE(VAR, STATE) TRANSITION_STATE_MSG(VAR, STATE, "Transitioning " #VAR " from")
 
 #define LOK_ASSERT_STATE(VAR, STATE)                                                               \
-    LOK_ASSERT_MESSAGE("Expected " #VAR " to be in " #STATE " but was " + toString(VAR),           \
-                       VAR == STATE)
+    LOK_ASSERT_MESSAGE("Expected " #VAR " to be in " #STATE " but was " << name(VAR), VAR == STATE)
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

@@ -64,7 +64,7 @@ L.Control.ContextMenu = L.Control.extend({
 				   'UpdateCurIndex','RemoveTableOf',
 				   'ReplyComment', 'DeleteComment', 'DeleteAuthor', 'DeleteAllNotes',
 				   'SpellingAndGrammarDialog', 'FontDialog', 'FontDialogForParagraph', 'TableDialog',
-				   'SpellCheckIgnore', 'FrameDialog', 'UnfloatFrame', 'ContentControlProperties'],
+				   'SpellCheckIgnore', 'FrameDialog', 'UnfloatFrame', 'ContentControlProperties', 'DeleteContentControl'],
 
 			spreadsheet: ['MergeCells', 'SplitCell', 'InsertCell', 'DeleteCell',
 				      'RecalcPivotTable', 'DataDataPilotRun', 'DeletePivotTable',
@@ -136,6 +136,7 @@ L.Control.ContextMenu = L.Control.extend({
 	_onKeyDown: function(e) {
 		if (e.originalEvent.keyCode === 27 /* ESC */) {
 			$.contextMenu('destroy', '.leaflet-layer');
+			this.hasContextMenu = false;
 		}
 	},
 
@@ -178,7 +179,7 @@ L.Control.ContextMenu = L.Control.extend({
 		} else {
 			L.installContextMenu({
 				selector: '.leaflet-layer',
-				className: 'cool-font',
+				className: 'cool-font on-the-fly-context-menu',
 				trigger: 'none',
 				zIndex: 1500,
 				build: function() {
@@ -197,13 +198,24 @@ L.Control.ContextMenu = L.Control.extend({
 						},
 						items: contextMenu
 					};
+				},
+				events: {
+					show: function (opt) {
+						var $menu = opt.$menu;
+						$menu.attr('tabindex', 0); // Make the context menu focusable
+					},
+					hide: function() {
+						if(autoFillContextMenu)
+							app.map._docLayer._resetReferencesMarks();
+						map.focus();
+					}
 				}
 			});
-
 			if (autoFillContextMenu)
 				$('.leaflet-layer').contextMenu(this._currMousePos);
 			else
 				$('.leaflet-layer').contextMenu(this._prevMousePos);
+			$('.context-menu-root').focus();
 			this.hasContextMenu = true;
 		}
 	},
@@ -246,20 +258,14 @@ L.Control.ContextMenu = L.Control.extend({
 				item.menu = undefined;
 			}
 
-			if (item.type === 'command' && item.text && item.text.replace('~', '') === 'Copy Cells'
-				&& item.menu && item.menu.length) {
+			if (item.type === 'command' && item.text && item.text.replace('~', '') === 'Copy Cells') {
 				item.text = _('Copy Cells');
 				item.command = '.uno:AutoFill?Copy:bool=true';
-				item.type = item.menu[0].type;
-				item.menu = undefined;
 			}
 
-			if (item.type === 'command' && item.text && item.text.replace('~', '') === 'Fill Series'
-				&& item.menu && item.menu.length) {
+			if (item.type === 'command' && item.text && item.text.replace('~', '') === 'Fill Series') {
 				item.text = _('Fill Series');
 				item.command = '.uno:AutoFill?Copy:bool=false';
-				item.type = item.menu[0].type;
-				item.menu = undefined;
 			}
 
 			if (item.type === 'separator') {
@@ -309,9 +315,13 @@ L.Control.ContextMenu = L.Control.extend({
 					itemName = _UNO(item.command, docType, true);
 				}
 
+				var toSnakeCase = function (text) {
+					return text.replace(/[ _]/gi, '-').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+				};
+
 				contextMenu[item.command] = {
 					// Using 'click' and <a href='#' is vital for copy/paste security context.
-					name: (window.mode.isMobile() ? _(itemName) : '<a href="#" class="context-menu-link">' +  _(itemName) + '</a'),
+					name: (window.mode.isMobile() ? _(itemName) : '<a href="#" class="context-menu-link ' + toSnakeCase(commandName) + '">' + _(itemName) + '</a'),
 					isHtmlName: true,
 				};
 
@@ -400,6 +410,5 @@ L.installContextMenu = function(options) {
 			$menu.css('right', $menu.css('left'));
 		};
 	}
-
 	$.contextMenu(options);
 };

@@ -11,6 +11,11 @@
 
 #include <config.h>
 
+#include <common/Anonymizer.hpp>
+#include <common/ConfigUtil.hpp>
+#include <common/Crypto.hpp>
+#include <common/Util.hpp>
+
 #include <iostream>
 #include <iomanip>
 #include <pwd.h>
@@ -32,10 +37,6 @@
 #include <Poco/Util/Option.h>
 #include <Poco/Util/OptionSet.h>
 #include <Poco/Util/XMLConfiguration.h>
-
-#include <common/ConfigUtil.hpp>
-#include <Util.hpp>
-#include <Crypto.hpp>
 
 using Poco::Util::Application;
 using Poco::Util::HelpFormatter;
@@ -62,6 +63,8 @@ private:
     unsigned _pwdSaltLength = 128;
     unsigned _pwdIterations = 10000;
     unsigned _pwdHashLength = 128;
+    std::string _adminUser = "";
+    std::string _adminPwd = "";
 public:
 
     void setPwdSaltLength(unsigned pwdSaltLength) { _pwdSaltLength = pwdSaltLength; }
@@ -70,6 +73,10 @@ public:
     unsigned getPwdIterations() const { return _pwdIterations; }
     void setPwdHashLength(unsigned pwdHashLength) { _pwdHashLength = pwdHashLength; }
     unsigned getPwdHashLength() const { return _pwdHashLength; }
+    const std::string& getAdminUser() const { return _adminUser; }
+    void setAdminUser(const std::string& user) { _adminUser = user; }
+    const std::string& getAdminPwd() const { return _adminPwd; }
+    void setAdminPwd(const std::string& pwd) { _adminPwd = pwd; }
 };
 
 // Config tool to change coolwsd configuration (coolwsd.xml)
@@ -133,7 +140,7 @@ void Config::displayHelp()
               << "    migrateconfig [--old-config-file=<path>] [--config-file=<path>] [--write]" << std::endl
               << "    anonymize [string-1]...[string-n]" << std::endl
               << "    set-admin-password" << std::endl;
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
     {
         std::cout << "    set-support-key" << std::endl;
     }
@@ -170,8 +177,16 @@ void Config::defineOptions(OptionSet& optionSet)
                         .required(false)
                         .repeatable(false)
                         .argument("number"));
+    optionSet.addOption(Option("user", "", "Admin user name [set-admin-password].")
+                        .required(false)
+                        .repeatable(false)
+                        .argument("name"));
+    optionSet.addOption(Option("password", "", "Admin user password [set-admin-password].")
+                        .required(false)
+                        .repeatable(false)
+                        .argument("password"));
 
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
     {
         optionSet.addOption(Option("support-key", "", "Specify the support key [set-support-key].")
                             .required(false)
@@ -235,6 +250,14 @@ void Config::handleOption(const std::string& optionName, const std::string& opti
         }
         _adminConfig.setPwdHashLength(len);
     }
+    else if (optionName == "user")
+    {
+        _adminConfig.setAdminUser(optionValue);
+    }
+    else if (optionName == "password")
+    {
+        _adminConfig.setAdminPwd(optionValue);
+    }
     else if (optionName == "support-key")
     {
         SupportKeyString = optionValue;
@@ -275,38 +298,44 @@ int Config::main(const std::vector<std::string>& args)
         std::stringstream stream;
 
         // Ask for admin username
-        std::string adminUser;
-        std::cout << "Enter admin username [admin]: ";
-        std::getline(std::cin, adminUser);
-        if (adminUser.empty())
-        {
-            adminUser = "admin";
+        if (_adminConfig.getAdminUser().empty()) {
+            std::string adminUser;
+            std::cout << "Enter admin username [admin]: ";
+            std::getline(std::cin, adminUser);
+            if (adminUser.empty())
+            {
+                adminUser = "admin";
+            }
+            _adminConfig.setAdminUser(adminUser);
         }
 
         // Ask for user password
-        termios oldTermios;
-        tcgetattr(STDIN_FILENO, &oldTermios);
-        termios newTermios = oldTermios;
-        // Disable user input mirroring on console for password input
-        newTermios.c_lflag &= ~ECHO;
-        tcsetattr(STDIN_FILENO, TCSANOW, &newTermios);
-        std::string adminPwd;
-        std::cout << "Enter admin password: ";
-        std::getline(std::cin, adminPwd);
-        std::string reAdminPwd;
-        std::cout << std::endl << "Confirm admin password: ";
-        std::getline(std::cin, reAdminPwd);
-        std::cout << std::endl;
-        // Set the termios to old state
-        tcsetattr(STDIN_FILENO, TCSANOW, &oldTermios);
-        if (adminPwd != reAdminPwd)
-        {
-            std::cout << "Password mismatch." << std::endl;
-            return EX_DATAERR;
+        if (_adminConfig.getAdminPwd().empty()) {
+            termios oldTermios;
+            tcgetattr(STDIN_FILENO, &oldTermios);
+            termios newTermios = oldTermios;
+            // Disable user input mirroring on console for password input
+            newTermios.c_lflag &= ~ECHO;
+            tcsetattr(STDIN_FILENO, TCSANOW, &newTermios);
+            std::string adminPwd;
+            std::cout << "Enter admin password: ";
+            std::getline(std::cin, adminPwd);
+            std::string reAdminPwd;
+            std::cout << std::endl << "Confirm admin password: ";
+            std::getline(std::cin, reAdminPwd);
+            std::cout << std::endl;
+            // Set the termios to old state
+            tcsetattr(STDIN_FILENO, TCSANOW, &oldTermios);
+            if (adminPwd != reAdminPwd)
+            {
+                std::cout << "Password mismatch." << std::endl;
+                return EX_DATAERR;
+            }
+            _adminConfig.setAdminPwd(adminPwd);
         }
 
         // Do the magic !
-        PKCS5_PBKDF2_HMAC(adminPwd.c_str(), -1,
+        PKCS5_PBKDF2_HMAC(_adminConfig.getAdminPwd().c_str(), -1,
                           salt.data(), _adminConfig.getPwdSaltLength(),
                           _adminConfig.getPwdIterations(),
                           EVP_sha512(),
@@ -329,7 +358,7 @@ int Config::main(const std::vector<std::string>& args)
         std::stringstream pwdConfigValue("pbkdf2.sha512.", std::ios_base::in | std::ios_base::out | std::ios_base::ate);
         pwdConfigValue << std::to_string(_adminConfig.getPwdIterations()) << '.';
         pwdConfigValue << saltHash << '.' << passwordHash;
-        _coolConfig.setString("admin_console.username", adminUser);
+        _coolConfig.setString("admin_console.username", _adminConfig.getAdminUser());
         _coolConfig.setString("admin_console.secure_password[@desc]",
                               "Salt and password hash combination generated using PBKDF2 with SHA512 digest.");
         _coolConfig.setString("admin_console.secure_password", pwdConfigValue.str());
@@ -340,7 +369,7 @@ int Config::main(const std::vector<std::string>& args)
         return EX_UNAVAILABLE;
 #endif
     }
-    else if (config::isSupportKeyEnabled() && args[0] == "set-support-key")
+    else if (ConfigUtil::isSupportKeyEnabled() && args[0] == "set-support-key")
     {
         std::string supportKeyString;
         if (SupportKeyStringProvided)
@@ -420,9 +449,11 @@ int Config::main(const std::vector<std::string>& args)
             std::cout << "Anonymization Salt: [" << AnonymizationSalt << "]." << std::endl;
         }
 
+        Anonymizer::initialize(true, AnonymizationSalt);
+
         for (std::size_t i = 1; i < args.size(); ++i)
         {
-            std::cout << '[' << args[i] << "]: " << Util::anonymizeUrl(args[i], AnonymizationSalt) << std::endl;
+            std::cout << '[' << args[i] << "]: " << Anonymizer::anonymizeUrl(args[i]) << std::endl;
         }
     }
     else if (args[0] == "migrateconfig")

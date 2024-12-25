@@ -41,6 +41,13 @@ L.Map.include({
 		this.sendUnoCommand(unoCommand);
 		app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).setViewResolved(on);
 		this.uiManager.setDocTypePref('ShowResolved', on ? true : false);
+	},
+
+	showComments: function(on: any) {
+		app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).setView(on);
+		this.uiManager.setDocTypePref('showannotations', on ? true : false);
+		this.fire('commandstatechanged', {commandName : 'showannotations', state : on ? 'true': 'false'});
+		this.fire('showannotationschanged', {state: on ? 'true': 'false'});
 	}
 });
 
@@ -82,6 +89,7 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 	static autoSavedComment: cool.Comment;
 	static commentWasAutoAdded: boolean = false;
 	static pendingImport: boolean = false;
+	static importingComments: boolean = false; // active during comments insertion, disable scroll
 
 	// To associate comment id with its index in commentList array.
 	private idIndexMap: Map<any, number>;
@@ -95,6 +103,7 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 		this.sectionProperties.commentList = new Array(0);
 		this.sectionProperties.selectedComment = null;
 		this.sectionProperties.arrow = null;
+		this.sectionProperties.show = null;
 		this.sectionProperties.showResolved = null;
 		this.sectionProperties.marginY = 10 * app.dpiScale;
 		this.sectionProperties.offset = 5 * app.dpiScale;
@@ -124,6 +133,8 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 		this.map.on('commandstatechanged', function (event: any) {
 			if (event.commandName === '.uno:ShowResolvedAnnotations')
 				this.setViewResolved(event.state === 'true');
+			else if (event.commandName === 'showannotations')
+				this.setView(event.state === 'true');
 			else if (event.commandName === '.uno:ShowTrackedChanges' && event.state === 'true')
 				app.socket.sendMessage('commandvalues command=.uno:ViewAnnotations');
 		}, this);
@@ -511,8 +522,9 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 				else if (eventType === 'select' || eventType === 'activate') {
 					const item = mention.getMentionUserData(index);
 					const replacement = '@' + mention.getPartialMention();
-					if (item.username !== '' && item.profile !== '')
-						comment.autoCompleteMention(item.username, item.profile, replacement)
+					const uid = item.label ?? item.username
+					if (uid !== '' && item.profile !== '')
+						comment.autoCompleteMention(uid, item.profile, replacement)
 					mention.closeMentionPopup(false);
 				}
 		}.bind(this);
@@ -535,7 +547,7 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 		multilineEditDiv.addEventListener('input', function(ev: any){
 			if (ev && comment.sectionProperties.docLayer._docType === 'text') {
 				// special handling for mentions
-				this.map.mention.handleMentionInput(ev);
+				this.map?.mention.handleMentionInput(ev, comment.isNewPara());
 			}
 		}.bind(this));
 
@@ -831,6 +843,9 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 	}
 
 	private scrollCommentIntoView (comment: Comment) {
+		if (CommentSection.importingComments)
+			return;
+
 		const docType = this.sectionProperties.docLayer._docType;
 		let anchorPosition: Array<number> = null;
 		const rootComment = this.sectionProperties.commentList[this.getRootIndexOf(comment.sectionProperties.data.id)];
@@ -2099,6 +2114,16 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 		this.update();
 	}
 
+	public setView (state: any): void {
+		this.sectionProperties.show = state;
+		for (var idx = 0; idx < this.sectionProperties.commentList.length;idx++) {
+			if (state == false)
+				this.sectionProperties.commentList[idx].hide();
+			else
+				this.sectionProperties.commentList[idx].show();
+		}
+	}
+
 	private orderCommentList (): void {
 		this.sectionProperties.commentList.sort(function(a: any, b: any) {
 			return Math.abs(a.sectionProperties.data.anchorPos[1]) - Math.abs(b.sectionProperties.data.anchorPos[1]) ||
@@ -2306,6 +2331,9 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 			CommentSection.pendingImport = true;
 			return;
 		}
+
+		CommentSection.importingComments = true;
+
 		this.clearList();
 		commentList = this.turnIntoAList(commentList);
 
@@ -2332,6 +2360,9 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 			this.update();
 		}
 
+		var show = this.map.stateChangeHandler.getItemValue('showannotations');
+		this.setView(show === true || show === 'true');
+
 		var showResolved = this.map.stateChangeHandler.getItemValue('ShowResolvedAnnotations');
 		this.setViewResolved(showResolved === true || showResolved === 'true');
 
@@ -2340,6 +2371,8 @@ export class CommentSection extends app.definitions.canvasSectionObject {
 
 		if (!(<any>window).mode.isMobile() && (this.sectionProperties.docLayer._docType === 'presentation' || this.sectionProperties.docLayer._docType === 'drawing'))
 			this.showHideComments();
+
+		CommentSection.importingComments = false;
 	}
 
 	// Accepts redlines/changes comments.

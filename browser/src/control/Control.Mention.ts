@@ -17,6 +17,7 @@
 interface MentionUserData {
 	username: string;
 	profile: string;
+	label?: string;
 }
 
 class Mention extends L.Control.AutoCompletePopup {
@@ -28,6 +29,7 @@ class Mention extends L.Control.AutoCompletePopup {
 	debouceTimeoutId: NodeJS.Timeout;
 	partialMention: Array<string>;
 	typingMention: boolean;
+	lastTypedChar: string;
 	cursorPosAtStart: Point;
 
 	constructor(map: ReturnType<typeof L.map>) {
@@ -69,8 +71,10 @@ class Mention extends L.Control.AutoCompletePopup {
 		// filterout the users from list according to the text
 		if (text.length > 1) {
 			this.filteredUsers = users.filter((element: any) => {
+				const uid = element.label ?? element.username;
+
 				// case insensitive
-				return element.username.toLowerCase().includes(text.toLowerCase());
+				return uid.toLowerCase().includes(text.toLowerCase());
 			});
 		} else {
 			this.filteredUsers = users;
@@ -78,11 +82,12 @@ class Mention extends L.Control.AutoCompletePopup {
 
 		if (this.filteredUsers.length !== 0) {
 			for (const i in this.filteredUsers) {
+				const currentUser = this.filteredUsers[i];
 				const entry = {
-					text: this.filteredUsers[i].username,
+					text: currentUser.label ?? currentUser.username,
 					columns: [
 						{
-							text: this.filteredUsers[i].username,
+							text: currentUser.label ?? currentUser.username,
 						},
 					],
 					row: i.toString(),
@@ -214,13 +219,18 @@ class Mention extends L.Control.AutoCompletePopup {
 		return this.typingMention;
 	}
 
-	handleMentionInput(ev: any) {
+	handleMentionInput(ev: any, newPara: boolean) {
 		if (!this.typingMention) {
-			if (ev.data === '@') {
+			const isAtSymbol = ev.data === '@';
+			const isLastCharAtOrSpace =
+				this.lastTypedChar === ' ' || this.lastTypedChar === '@';
+			if ((newPara && isAtSymbol) || (isAtSymbol && isLastCharAtOrSpace)) {
 				this.partialMention.push(ev.data);
 				this.typingMention = true;
 				this.cursorPosAtStart = this.getCursorPosition();
+				return;
 			}
+			this.lastTypedChar = ev.data;
 			return;
 		}
 
@@ -249,19 +259,19 @@ class Mention extends L.Control.AutoCompletePopup {
 
 	getMentionUserData(index: number): MentionUserData {
 		if (index >= this.filteredUsers.length)
-			return { username: '', profile: '' } as MentionUserData;
+			return { username: '', profile: '', label: null } as MentionUserData;
 		return this.filteredUsers[index];
 	}
 
 	private sendHyperlinkUnoCommand(
-		username: string,
+		uid: string,
 		profile: string,
 		replacement: string,
 	) {
 		var command = {
 			'Hyperlink.Text': {
 				type: 'string',
-				value: '@' + username,
+				value: '@' + uid,
 			},
 			'Hyperlink.URL': {
 				type: 'string',
@@ -285,15 +295,26 @@ class Mention extends L.Control.AutoCompletePopup {
 		} else if (eventType === 'select' || eventType === 'activate') {
 			const username = this.filteredUsers[index].username;
 			const profileLink = this.filteredUsers[index].profile;
+			const label = this.filteredUsers[index].label;
 			const replacement = '@' + this.getPartialMention();
 
-			if (comment)
-				comment.autoCompleteMention(username, profileLink, replacement);
-			else this.sendHyperlinkUnoCommand(username, profileLink, replacement);
-
+			if (comment) {
+				comment.autoCompleteMention(
+					label ?? username,
+					profileLink,
+					replacement,
+				);
+			} else {
+				this.sendHyperlinkUnoCommand(
+					label ?? username,
+					profileLink,
+					replacement,
+				);
+				this.map._textInput._sendText(' ');
+			}
 			this.map.fire('postMessage', {
 				msgId: 'UI_Mention',
-				args: { type: 'selected', username: username },
+				args: { type: 'selected', username: username, label: label },
 			});
 			this.closeMentionPopup(false);
 		} else if (eventType === 'keydown') {

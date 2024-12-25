@@ -26,6 +26,7 @@ class SlideShowContext {
 	public bIsSkipping: boolean;
 	public nSlideWidth: number;
 	public nSlideHeight: number;
+	public aCanvas: HTMLCanvasElement;
 
 	constructor(
 		aSlideShowHandler: SlideShowHandler,
@@ -98,7 +99,9 @@ class SlideShowHandler {
 		TransitionSubType.HEART,
 	]);
 
-	constructor() {
+	constructor(presenter: SlideShowPresenter) {
+		this.presenter = presenter;
+
 		this.aTimer = new ElapsedTime();
 		this.aFrameSynchronization = new FrameSynchronization(
 			SlideShowHandler.PREFERRED_FRAME_RATE,
@@ -144,10 +147,6 @@ class SlideShowHandler {
 
 	setMetaPresentation(metaPres: MetaPresentation) {
 		this.theMetaPres = metaPres;
-	}
-
-	setPresenter(presenter: SlideShowPresenter) {
-		this.presenter = presenter;
 	}
 
 	setNavigator(slideShowNavigator: SlideShowNavigator) {
@@ -361,6 +360,8 @@ class SlideShowHandler {
 				aAnimatedElement.notifySlideStart(this.aContext);
 			});
 		}
+
+		this.presenter._map.fire('transitionstart', { slide: nNewSlideIndex });
 	}
 
 	notifyTransitionEnd(nNewSlide: number, nOldSlide: number | undefined) {
@@ -810,7 +811,7 @@ class SlideShowHandler {
 
 		this.notifySlideStart(nNewSlide, nOldSlide);
 
-		if (this.isEnabled() && !bSkipSlideTransition) {
+		if (this.isEnabled() && this.isGlSupported() && !bSkipSlideTransition) {
 			// create slide transition and add to activity queue
 			if (
 				(nOldSlide === undefined && this.isStarting) ||
@@ -915,6 +916,13 @@ class SlideShowHandler {
 
 	getSlideInfo(nSlideIndex: number): SlideInfo {
 		return this.theMetaPres.getSlideInfoByIndex(nSlideIndex);
+	}
+
+	getAnimatedLayerInfo(
+		slideHash: string,
+		targetElement: string,
+	): AnimatedShapeInfo {
+		return this.slideCompositor.getAnimatedLayerInfo(slideHash, targetElement);
 	}
 
 	private isMipMapsEnable(transitionFilterInfo: TransitionFilterInfo): boolean {

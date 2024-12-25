@@ -383,6 +383,8 @@ public:
 
     void addRecvStats(uint64_t recv);
 
+    void addConnectionStats(size_t connections);
+
     void setCpuStatsSize(unsigned size);
 
     void setMemStatsSize(unsigned size);
@@ -412,7 +414,8 @@ public:
     void setViewLoadDuration(const std::string& docKey, const std::string& sessionId, std::chrono::milliseconds viewLoadDuration);
     void setDocWopiDownloadDuration(const std::string& docKey, std::chrono::milliseconds wopiDownloadDuration);
     void setDocWopiUploadDuration(const std::string& docKey, const std::chrono::milliseconds wopiUploadDuration);
-    void addSegFaultCount(unsigned segFaultCount);
+    void addErrorExitCounters(unsigned segFaultCount, unsigned killedCount,
+                              unsigned oomKilledCount);
     void setForKitPid(pid_t pid) { _forKitPid = pid; }
     void addLostKitsTerminated(unsigned lostKitsTerminated);
 
@@ -451,6 +454,8 @@ private:
 
     std::string getRecvActivity();
 
+    std::string getConnectionActivity();
+
     std::string getCpuStats();
 
     unsigned getTotalActiveViews();
@@ -477,11 +482,16 @@ private:
     std::list<unsigned> _recvStats;
     unsigned _recvStatsSize = 200;
 
+    std::list<size_t> _connStats;
+    unsigned _connStatsSize = 200;
+
     uint64_t _sentBytesTotal = 0;
     uint64_t _recvBytesTotal = 0;
 
     uint64_t _segFaultCount = 0;
     uint64_t _lostKitsTerminatedCount = 0;
+    uint64_t _killedCount = 0;
+    uint64_t _oomKilledCount = 0;
 
     pid_t _forKitPid = 0;
 

@@ -15,6 +15,8 @@
 #include "CommandControl.hpp"
 #endif
 
+#include <common/Anonymizer.hpp>
+#include <common/StateEnum.hpp>
 #include <Admin.hpp>
 #include <COOLWSD.hpp>
 #include <ClientSession.hpp>
@@ -22,6 +24,8 @@
 #include <Exceptions.hpp>
 #include <FileServer.hpp>
 #include <HttpRequest.hpp>
+#include <NetUtil.hpp>
+#include <JsonUtil.hpp>
 #include <JailUtil.hpp>
 #include <ProofKey.hpp>
 #include <ProxyRequestHandler.hpp>
@@ -74,6 +78,7 @@ extern void cleanupDocBrokers();
 namespace
 {
 
+#if ENABLE_SUPPORT_KEY
 /// Used in support key enabled builds
 inline void shutdownLimitReached(const std::shared_ptr<ProtocolHandlerInterface>& proto)
 {
@@ -97,6 +102,7 @@ inline void shutdownLimitReached(const std::shared_ptr<ProtocolHandlerInterface>
         LOG_ERR("Error while shutting down socket on reaching limit: " << ex.what());
     }
 }
+#endif
 
 } // end anonymous namespace
 
@@ -170,7 +176,7 @@ findOrCreateDocBroker(DocumentBroker::ChildType type, const std::string& uri,
             LOG_WRN("Maximum number of open documents of "
                     << COOLWSD::MaxDocuments << " reached while loading new session [" << id
                     << "] for docKey [" << docKey << ']');
-            if (config::isSupportKeyEnabled())
+            if constexpr (ConfigUtil::isSupportKeyEnabled())
             {
                 const std::string error = Poco::format(PAYLOAD_UNAVAILABLE_LIMIT_REACHED,
                                                        COOLWSD::MaxDocuments, COOLWSD::MaxConnections);
@@ -654,14 +660,14 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
     }
 
 #if !MOBILEAPP
-    if (!COOLWSD::isSSLEnabled() && socket->sniffSSL())
+    if (!ConfigUtil::isSslEnabled() && socket->sniffSSL())
     {
         LOG_ERR("Looks like SSL/TLS traffic on plain http port");
         HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
         return;
     }
 
-    Poco::MemoryInputStream startmessage(&socket->getInBuffer()[0], socket->getInBuffer().size());
+    Poco::MemoryInputStream startmessage(socket->getInBuffer().data(), socket->getInBuffer().size());
 
 #if 0 // debug a specific command's payload
         if (Util::findInVector(socket->getInBuffer(), "insertfile") != std::string::npos)
@@ -690,7 +696,7 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
     {
         // We may need to re-write the chunks moving the inBuffer.
         socket->compactChunks(map);
-        Poco::MemoryInputStream message(&socket->getInBuffer()[0], socket->getInBuffer().size());
+        Poco::MemoryInputStream message(socket->getInBuffer().data(), socket->getInBuffer().size());
         // update the read cursor - headers are not altered by chunks.
         message.seekg(startmessage.tellg(), std::ios::beg);
 
@@ -704,7 +710,8 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
             if (!COOLWSD::IsProxyPrefixEnabled)
                 throw BadRequestException(
                     "ProxyPrefix present but net.proxy_prefix is not enabled");
-            else if (!socket->isLocal())
+
+            if (!socket->isLocal())
                 throw BadRequestException("ProxyPrefix request from non-local socket");
         }
 
@@ -819,8 +826,8 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
             try
             {
                 /* WARNING: security point, we may skip authentication */
-                bool skipAuthentication =
-                    COOLWSD::getConfigValue<bool>("security.enable_metrics_unauthenticated", false);
+                bool skipAuthentication = ConfigUtil::getConfigValue<bool>(
+                    "security.enable_metrics_unauthenticated", false);
                 if (!skipAuthentication)
                     if (!COOLWSD::FileRequestHandler->isAdminLoggedIn(request, *response))
                         throw Poco::Net::NotAuthenticatedException("Invalid admin login");
@@ -864,6 +871,8 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
                 servedSync = handleWopiDiscoveryRequest(requestDetails, socket);
             else if (requestDetails.equals(1, "capabilities"))
                 servedSync = handleCapabilitiesRequest(request, socket);
+            else if (requestDetails.equals(1, "wopiAccessCheck"))
+                handleWopiAccessCheckRequest(request, message, socket);
             else
                 HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
         }
@@ -879,6 +888,11 @@ void ClientRequestDispatcher::handleIncomingMessage(SocketDisposition& dispositi
         {
             //              Util::dumpHex(std::cerr, socket->getInBuffer(), "clipboard:\n"); // lots of data ...
             servedSync = handleClipboardRequest(request, message, disposition, socket);
+        }
+        else if (requestDetails.equals(RequestDetails::Field::Type, "cool") &&
+                 requestDetails.equals(1, "signature"))
+        {
+            servedSync = handleSignatureRequest(request, socket);
         }
 
         else if (requestDetails.isProxy() && requestDetails.equals(2, "ws"))
@@ -1064,7 +1078,7 @@ bool ClientRequestDispatcher::handleWopiDiscoveryRequest(
     std::string xml = getFileContent("discovery.xml");
     std::string srvUrl =
 #if ENABLE_SSL
-        ((COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination()) ? "https://" : "http://")
+        ((ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination()) ? "https://" : "http://")
 #else
         "http://"
 #endif
@@ -1087,6 +1101,245 @@ bool ClientRequestDispatcher::handleWopiDiscoveryRequest(
     return true;
 }
 
+
+// NB: these names are part of the published API, and should not be renamed or altered but can be expanded
+STATE_ENUM(CheckStatus,
+    Ok,
+    NotHttpSucess,
+    HostNotFound,
+    WopiHostNotAllowed,
+    HostUnReachable,
+    UnspecifiedError,
+    ConnectionAborted,
+    ConnectionRefused,
+    CertificateValidation,
+    SSLHandshakeFail,
+    MissingSsl,
+    NotHttps,
+    NoScheme,
+    Timeout,
+);
+
+bool ClientRequestDispatcher::handleWopiAccessCheckRequest(const Poco::Net::HTTPRequest& request,
+                                                           Poco::MemoryInputStream& message,
+                                                           const std::shared_ptr<StreamSocket>& socket)
+{
+    assert(socket && "Must have a valid socket");
+
+    LOG_DBG("Wopi Access Check request: " << request.getURI());
+
+    Poco::MemoryInputStream startmessage(&socket->getInBuffer()[0], socket->getInBuffer().size());
+    StreamSocket::MessageMap map;
+
+    Poco::JSON::Object::Ptr jsonObject;
+
+    std::string text(std::istreambuf_iterator<char>(message), {});
+    LOG_TRC("Wopi Access Check request text: " << text);
+
+    std::string callbackUrlStr;
+
+    if (!JsonUtil::parseJSON(text, jsonObject))
+    {
+        LOG_WRN_S("Wopi Access Check request error, json object expected got ["
+                  << text << "] on request to URL: " << request.getURI());
+
+        HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+        return false;
+    }
+
+    if (!JsonUtil::findJSONValue(jsonObject, "callbackUrl", callbackUrlStr))
+    {
+        LOG_WRN_S("Wopi Access Check request error, missing key callbackUrl expected got ["
+                  << text << "] on request to URL: " << request.getURI());
+
+        HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+        return false;
+    }
+
+    LOG_TRC("Wopi Access Check request callbackUrlStr: " << callbackUrlStr);
+
+    std::string scheme, host, portStr, pathAndQuery;
+    if (!net::parseUri(callbackUrlStr, scheme, host, portStr, pathAndQuery)) {
+        LOG_WRN_S("Wopi Access Check request error, invalid url ["
+                  << callbackUrlStr << "] on request to URL: " << request.getURI() << scheme);
+
+        HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+        return false;
+    }
+    http::Session::Protocol protocol = http::Session::Protocol::HttpSsl;
+    ulong port = 443;
+    if (scheme == "https://" || scheme.empty()) {
+        // empty scheme assumes https
+    } else if (scheme == "http://") {
+        protocol = http::Session::Protocol::HttpUnencrypted;
+        port = 80;
+    } else {
+        LOG_WRN_S("Wopi Access Check request error, bad request protocol ["
+                  << text << "] on request to URL: " << request.getURI() << scheme);
+
+        HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+        return false;
+    }
+
+    if (!portStr.empty()) {
+        try {
+            port = std::stoul(portStr);
+
+        } catch(std::invalid_argument &exception) {
+            LOG_WRN("Wopi Access Check error parsing invalid_argument portStr:" << portStr);
+            HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+            return false;
+        } catch(std::exception &exception) {
+
+            LOG_WRN_S("Wopi Access Check request error, bad request invalid porl ["
+                  << text << "] on request to URL: " << request.getURI());
+
+            HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket);
+            return false;
+        }
+    }
+
+    LOG_TRC("Wopi Access Check request scheme: " << scheme << " " << port);
+
+    const auto sendResult = [this, socket](CheckStatus result)
+    {
+        const auto output = "{\"status\": \"" + JsonUtil::escapeJSONValue(name(result)) + "\"}\n";
+
+        http::Response jsonResponse(http::StatusCode::OK);
+        FileServerRequestHandler::hstsHeaders(jsonResponse);
+        jsonResponse.set("Last-Modified", Util::getHttpTimeNow());
+        jsonResponse.setBody(output, "application/json");
+        jsonResponse.set("X-Content-Type-Options", "nosniff");
+
+        socket->sendAndShutdown(jsonResponse);
+        LOG_INF("Wopi Access Check request, result" << name(result));
+    };
+
+    if (scheme.empty())
+    {
+        sendResult(CheckStatus::NoScheme);
+        return true;
+    }
+    // if the wopi hosts uses https, so must cool or it will have Mixed Content errors
+    if (protocol == http::Session::Protocol::HttpSsl &&
+#if ENABLE_SSL
+        !(ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination())
+#else
+        false
+#endif
+    )
+    {
+        sendResult(CheckStatus::NotHttps);
+        return true;
+    }
+
+    if (HostUtil::isWopiHostsEmpty())
+        // make sure the wopi hosts settings are loaded
+        StorageBase::initialize();
+
+    bool wopiHostAllowed = false;
+    if (Util::iequal(ConfigUtil::getString("storage.wopi.alias_groups[@mode]", "first"), "first"))
+        // if first mode was selected and wopi Hosts are empty
+        // the domain is allowed, as it will be the effective "first" host
+        wopiHostAllowed = HostUtil::isWopiHostsEmpty();
+
+    if (!wopiHostAllowed) {
+        // port and scheme from wopi host config are currently ignored by HostUtil
+        LOG_TRC("Wopi Access Check, matching allowed wopi host for host " << host);
+        wopiHostAllowed = HostUtil::allowedWopiHost(host);
+    }
+    if (!wopiHostAllowed)
+    {
+        LOG_TRC("Wopi Access Check, wopi host not allowed " << host);
+        sendResult(CheckStatus::WopiHostNotAllowed);
+        return true;
+    }
+
+    http::Request httpRequest(pathAndQuery.empty() ? "/" : pathAndQuery);
+    auto httpProbeSession = http::Session::create(host, protocol, port);
+    httpProbeSession->setTimeout(std::chrono::seconds(2));
+
+    httpProbeSession->setConnectFailHandler(
+        [=, this] (const std::shared_ptr<http::Session>& probeSession){
+
+            CheckStatus status = CheckStatus::UnspecifiedError;
+
+            const auto result = probeSession->connectionResult();
+
+            if (result == net::AsyncConnectResult::UnknownHostError || result == net::AsyncConnectResult::HostNameError)
+            {
+                status = CheckStatus::HostNotFound;
+            }
+
+            if (result == net::AsyncConnectResult::SSLHandShakeFailure) {
+                status = CheckStatus::SSLHandshakeFail;
+            }
+
+            if (!probeSession->getSslVerifyMessage().empty())
+            {
+                status = CheckStatus::CertificateValidation;
+
+                LOG_DBG("Result ssl: " << probeSession->getSslVerifyMessage());
+            }
+
+            sendResult(status);
+    });
+
+    auto finishHandler = [=, this](const std::shared_ptr<http::Session>& probeSession)
+    {
+        LOG_TRC("finishHandler ");
+
+        CheckStatus status = CheckStatus::Ok;
+        const auto lastErrno = errno;
+
+        const auto httpResponse = probeSession->response();
+        const auto responseState = httpResponse->state();
+        LOG_DBG("Wopi Access Check: got response state: " << responseState << " "
+                                            << ", response status code: " <<httpResponse->statusCode() << " "
+                                            << ", last errno: " << lastErrno);
+
+        if (responseState != http::Response::State::Complete)
+        {
+            // are TLS errors here ?
+            status = CheckStatus::UnspecifiedError;
+        }
+
+        if (responseState == http::Response::State::Timeout)
+            status = CheckStatus::Timeout;
+
+
+        const auto result = probeSession->connectionResult();
+
+        if (result == net::AsyncConnectResult::UnknownHostError)
+            status = CheckStatus::HostNotFound;
+
+        if (protocol == http::Session::Protocol::HttpSsl && lastErrno == ENOTCONN)
+            status = CheckStatus::MissingSsl;
+
+        if (result == net::AsyncConnectResult::ConnectionError)
+            status = CheckStatus::ConnectionAborted;
+
+        // TODO complete error coverage
+        // certificate errors
+        // self-signed
+        // expired
+
+        if (!probeSession->getSslVerifyMessage().empty())
+        {
+            status = CheckStatus::CertificateValidation;
+
+            LOG_DBG("Result ssl: " << probeSession->getSslVerifyMessage());
+        }
+
+        sendResult(status);
+    };
+
+    httpProbeSession->setFinishedHandler(std::move(finishHandler));
+    httpProbeSession->asyncRequest(httpRequest, *COOLWSD::getWebServerPoll());
+
+    return true;
+}
+
 bool ClientRequestDispatcher::handleClipboardRequest(const Poco::Net::HTTPRequest& request,
                                                      Poco::MemoryInputStream& message,
                                                      SocketDisposition& disposition,
@@ -1100,7 +1353,8 @@ bool ClientRequestDispatcher::handleClipboardRequest(const Poco::Net::HTTPReques
 
     Poco::URI requestUri(request.getURI());
     Poco::URI::QueryParameters params = requestUri.getQueryParameters();
-    std::string WOPISrc, serverId, viewId, tag, mime;
+    std::string WOPISrc, serverId, viewId, tag, mime, charset;
+
     for (const auto& it : params)
     {
         if (it.first == "WOPISrc")
@@ -1113,7 +1367,12 @@ bool ClientRequestDispatcher::handleClipboardRequest(const Poco::Net::HTTPReques
             tag = it.second;
         else if (it.first == "MimeType")
             mime = it.second;
+        else if (it.first == "charset")
+            charset = it.second;
     }
+
+    if (!charset.empty())
+        mime += ";charset=" + charset;
 
     if (serverId != Util::getProcessIdentifier())
     {
@@ -1122,10 +1381,7 @@ bool ClientRequestDispatcher::handleClipboardRequest(const Poco::Net::HTTPReques
                   << "] on request to URL: " << request.getURI());
 
         // we got the wrong request.
-        http::Response httpResponse(http::StatusCode::BadRequest);
-        httpResponse.set("Content-Length", "0");
-        socket->sendAndShutdown(httpResponse);
-        socket->ignoreInput();
+        HttpHelper::sendErrorAndShutdown(http::StatusCode::BadRequest, socket, "wrong server");
         return true;
     }
 
@@ -1207,19 +1463,22 @@ bool ClientRequestDispatcher::handleClipboardRequest(const Poco::Net::HTTPReques
     return false;
 }
 
-bool ClientRequestDispatcher::handleRobotsTxtRequest(const Poco::Net::HTTPRequest& request,
-                                                     const std::shared_ptr<StreamSocket>& socket)
+namespace
+{
+bool handleStaticRequest(const Poco::Net::HTTPRequest& request,
+                         const std::shared_ptr<StreamSocket>& socket,
+                         const std::string& responseString,
+                         const std::string& contentType)
 {
     assert(socket && "Must have a valid socket");
 
     LOG_DBG_S("HTTP request: " << request.getURI());
-    const std::string responseString = "User-agent: *\nDisallow: /\n";
 
     http::Response httpResponse(http::StatusCode::OK);
     FileServerRequestHandler::hstsHeaders(httpResponse);
     httpResponse.set("Last-Modified", Util::getHttpTimeNow());
     httpResponse.set("Content-Length", std::to_string(responseString.size()));
-    httpResponse.set("Content-Type", "text/plain");
+    httpResponse.set("Content-Type", contentType);
     if( !request.getKeepAlive() )
         httpResponse.header().setConnectionToken(http::Header::ConnectionToken::Close);
     httpResponse.writeData(socket->getOutBuffer());
@@ -1229,8 +1488,41 @@ bool ClientRequestDispatcher::handleRobotsTxtRequest(const Poco::Net::HTTPReques
         socket->send(responseString);
     }
     socket->flush();
-    LOG_INF_S("Sent robots.txt response successfully");
+    LOG_INF_S("Sent the response successfully");
     return true;
+}
+}
+
+bool ClientRequestDispatcher::handleSignatureRequest(const Poco::Net::HTTPRequest& request,
+                                                     const std::shared_ptr<StreamSocket>& socket)
+{
+    const std::string responseString = R"html(
+<!doctype html>
+<html>
+    <head>
+        <script type="text/javascript">
+            document.addEventListener("DOMContentLoaded", function() {
+                window.opener.postMessage({
+                    sender: 'EIDEASY_SINGLE_METHOD_SIGNATURE',
+                    type: 'SUCCESS',
+                });
+            });
+        </script>
+    </head>
+    <body>
+    </body>
+</html>
+)html";
+    const std::string contentType = "text/html";
+    return handleStaticRequest(request, socket, responseString, contentType);
+}
+
+bool ClientRequestDispatcher::handleRobotsTxtRequest(const Poco::Net::HTTPRequest& request,
+                                                     const std::shared_ptr<StreamSocket>& socket)
+{
+    const std::string responseString = "User-agent: *\nDisallow: /\n";
+    const std::string contentType = "text/plain";
+    return handleStaticRequest(request, socket, responseString, contentType);
 }
 
 bool ClientRequestDispatcher::handleMediaRequest(const Poco::Net::HTTPRequest& request,
@@ -1326,7 +1618,7 @@ bool ClientRequestDispatcher::handleMediaRequest(const Poco::Net::HTTPRequest& r
 
 std::string ClientRequestDispatcher::getContentType(const std::string& fileName)
 {
-    static std::unordered_map<std::string, std::string> aContentTypes{
+    static std::unordered_map<std::string, std::string> contentTypes{
         { "svg", "image/svg+xml" },
         { "pot", "application/vnd.ms-powerpoint" },
         { "xla", "application/vnd.ms-excel" },
@@ -1468,8 +1760,8 @@ std::string ClientRequestDispatcher::getContentType(const std::string& fileName)
 
     const std::string sExt = Poco::Path(fileName).getExtension();
 
-    const auto it = aContentTypes.find(sExt);
-    if (it != aContentTypes.end())
+    const auto it = contentTypes.find(sExt);
+    if (it != contentTypes.end())
         return it->second;
 
     return "application/octet-stream";
@@ -1814,7 +2106,8 @@ bool ClientRequestDispatcher::handleClientProxyRequest(const Poco::Net::HTTPRequ
     auto uriPublic = RequestDetails::sanitizeURI(url);
     const auto docKey = RequestDetails::getDocKey(uriPublic);
     const std::string fileId = Uri::getFilenameFromURL(docKey);
-    Util::mapAnonymized(fileId, fileId); // Identity mapping, since fileId is already obfuscated
+    Anonymizer::mapAnonymized(fileId,
+                              fileId); // Identity mapping, since fileId is already obfuscated
 
     LOG_INF("Starting Proxy request handler for session [" << _id << "] on url ["
                                                            << COOLWSD::anonymizeUrl(url) << "].");
@@ -1910,9 +2203,11 @@ bool ClientRequestDispatcher::handleClientWsUpgrade(const Poco::Net::HTTPRequest
         {
             LOG_INF("Limit on maximum number of connections of " << COOLWSD::MaxConnections
                                                                  << " reached.");
-            if (config::isSupportKeyEnabled())
+            if constexpr (ConfigUtil::isSupportKeyEnabled())
             {
+#if ENABLE_SUPPORT_KEY
                 shutdownLimitReached(ws);
+#endif
                 return true;
             }
         }
@@ -2107,7 +2402,7 @@ static std::string getCapabilitiesJson(bool convertToAvailable)
     capabilities->set("hasMobileSupport", true);
 
     // Set the product name
-    capabilities->set("productName", config::getString("product_name", APP_NAME));
+    capabilities->set("productName", ConfigUtil::getString("product_name", APP_NAME));
 
     // Set the Server ID
     capabilities->set("serverId", Util::getProcessIdentifier());
@@ -2122,16 +2417,17 @@ static std::string getCapabilitiesJson(bool convertToAvailable)
     capabilities->set("hasProxyPrefix", COOLWSD::IsProxyPrefixEnabled);
 
     // Set if this instance supports Zotero
-    capabilities->set("hasZoteroSupport", config::getBool("zotero.enable", true));
+    capabilities->set("hasZoteroSupport", ConfigUtil::getBool("zotero.enable", true));
 
     // Set if this instance supports WASM.
     capabilities->set("hasWASMSupport",
                       COOLWSD::WASMState != COOLWSD::WASMActivationState::Disabled);
 
     // Set if this instance supports document signing.
-    capabilities->set("hasDocumentSigningSupport", config::getBool("document_signing.enable", true));
+    capabilities->set("hasDocumentSigningSupport",
+                      ConfigUtil::getBool("document_signing.enable", true));
 
-    const std::string serverName = config::getString("indirection_endpoint.server_name", "");
+    const std::string serverName = ConfigUtil::getString("indirection_endpoint.server_name", "");
     if (const char* podName = std::getenv("POD_NAME"))
         capabilities->set("podName", podName);
     else if (!serverName.empty())
@@ -2140,9 +2436,9 @@ static std::string getCapabilitiesJson(bool convertToAvailable)
     if (COOLWSD::IndirectionServerEnabled && COOLWSD::GeolocationSetup)
     {
         std::string timezoneName =
-            config::getString("indirection_endpoint.geolocation_setup.timezone", "");
+            ConfigUtil::getString("indirection_endpoint.geolocation_setup.timezone", "");
         if (!timezoneName.empty())
-            capabilities->set("timezone", std::string(timezoneName));
+            capabilities->set("timezone", timezoneName);
     }
 
     std::ostringstream ostrJSON;

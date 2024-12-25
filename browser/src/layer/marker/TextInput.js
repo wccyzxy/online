@@ -439,8 +439,8 @@ L.TextInput = L.Layer.extend({
 				_('Screen reader support for text content is disabled. ') +
 				_('You need to enable it both at server level and in the UI. ') +
 				_('Look for the accessibility section in coolwsd.xml for server setting. ') +
-				_('Also check the voice over toggle under %parentControl.').replace(
-					'%parentControl',
+				_('Also check the voice over toggle under {parentControl}.').replace(
+					'{parentControl}',
 					window.userInterfaceMode === 'notebookbar' ? _('the Help tab') : _('the View menu')
 				);
 			this._textArea.setAttribute('aria-description', warningMessage);
@@ -497,12 +497,10 @@ L.TextInput = L.Layer.extend({
 
 		// Move and display under-caret marker
 
-		if (window.touch.hasAnyTouchscreen()) {
-			if (this._map._docLayer._textCSelections.empty()) {
-				this._cursorHandler.setLatLng(bottom).addTo(this._map);
-			} else {
-				this._map.removeLayer(this._cursorHandler);
-			}
+		if (window.touch.currentlyUsingTouchscreen() && this._map._docLayer._textCSelections.empty()) {
+			this._cursorHandler.setLatLng(bottom).addTo(this._map);
+		} else {
+			this._map.removeLayer(this._cursorHandler);
 		}
 
 		// Move the hidden text area with the cursor
@@ -778,8 +776,11 @@ L.TextInput = L.Layer.extend({
 		this._finishFormulabarEditing(content, matchTo);
 
 		// special handling for mentions
-		if (this._map.getDocType() === 'text')
-			this._map.mention.handleMentionInput(ev);
+		if (this._map.getDocType() === 'text') {
+			const contentStr = this.codePointsToString(content);
+			const newPara = contentStr.length === 1;
+			this._map.mention.handleMentionInput(ev, newPara);
+		}
 
 		this._statusLog('_onInput ]');
 	},

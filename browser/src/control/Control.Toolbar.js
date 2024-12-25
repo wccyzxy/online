@@ -538,12 +538,10 @@ var onShapeKeyDownFunction = function(event) {
 		closePopup();
 		app.map.focus();
 	}
-	event.stopPropagation();
 };
 
-function insertShapes(shapeType, grid = document.getElementsByClassName('insertshape-grid')[0]) {
+function insertShapes(shapeType, grid = document.getElementsByClassName('insertshape-grid')[0], width) {
 
-	var width = 10;
 	grid.classList.add(shapeType);
 
 	if (window.mode.isDesktop() || window.mode.isTablet())
@@ -562,10 +560,10 @@ function insertShapes(shapeType, grid = document.getElementsByClassName('inserts
 
 		var rows = Math.ceil(collection[s].length / width);
 		var idx = 0;
+		const row = document.createElement('div');
+		row.className = 'row';
+		grid.appendChild(row);
 		for (let r = 0; r < rows; r++) {
-			const row = document.createElement('div');
-			row.className = 'row';
-			grid.appendChild(row);
 
 			for (let c = 0; c < width; c++) {
 				if (idx >= collection[s].length) {
@@ -578,6 +576,7 @@ function insertShapes(shapeType, grid = document.getElementsByClassName('inserts
 				col.className = 'col w2ui-icon ' + shape.img;
 				col.dataset.uno = shape.uno;
 				col.tabIndex = 0;
+				col.setAttribute('index', r + ':' + c);
 				row.appendChild(col);
 			}
 
@@ -599,7 +598,7 @@ function getShapesPopupElements(closeCallback) {
 	const container = document.createElement('div');
 	container.appendChild(grid);
 
-	insertShapes('insertshapes', container.children[0]);
+	insertShapes('insertshapes', container.children[0], 10);
 
 	const wrapperContainer = document.createElement('div');
 
@@ -610,7 +609,6 @@ function getShapesPopupElements(closeCallback) {
 
 	const popUp = document.createElement('div');
 	popUp.id = 'insertshape-popup';
-	popUp.tabIndex = 0;
 	popUp.className = 'insertshape-pop ui-widget ui-corner-all';
 
 	wrapperContainer.appendChild(popUp);
@@ -633,7 +631,7 @@ function getConnectorsPopupElements(closeCallback) {
 
 	gridContainer.appendChild(grid);
 
-	insertShapes('insertconnectors', gridContainer.children[0]);
+	insertShapes('insertconnectors', gridContainer.children[0], 2);
 
 
 	const wrapperContainer = document.createElement('div');
@@ -643,7 +641,6 @@ function getConnectorsPopupElements(closeCallback) {
 
 	const popUp = document.createElement('div');
 	popUp.id = 'insertshape-popup';
-	popUp.tabIndex = 0;
 	popUp.className = 'insertshape-pop ui-widget ui-corner-all';
 
 	wrapperContainer.appendChild(wrapper);
@@ -965,7 +962,6 @@ function onCommandStateChanged(e) {
 }
 
 function onUpdateParts(e) {
-	$('#document-container').addClass(e.docType + '-doctype');
 	if (e.docType === 'text') {
 		var current = e.currentPage;
 		var count = e.pages;
@@ -1167,7 +1163,6 @@ function setupToolbar(e) {
 				// Coordinates contains a list of numbers, 0-1 top-left of the cell with the hyperlink
 				// 2-3 size of the cell, 4-5 number of th cell, 6-7 are the position of the click
 				var strTwips = e.coordinates.match(/\d+/g);
-				app.definitions.urlPopUpSection.closeURLPopUp();
 				var linkPosition;
 				if (strTwips.length > 7) {
 					linkPosition = new app.definitions.simplePoint(parseInt(strTwips[6]), parseInt(strTwips[7]));
@@ -1196,7 +1191,11 @@ function setupToolbar(e) {
 	}
 
 	$('#closebutton').click(function () {
-		global.app.dispatcher.dispatch('closeapp');
+		let dispatcher = global.app.dispatcher;
+		if (!dispatcher)
+			dispatcher = new app.definitions['dispatcher']('global');
+
+		dispatcher.dispatch('closeapp');
 	});
 }
 

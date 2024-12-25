@@ -11,12 +11,11 @@
 
 #pragma once
 
+#include "NetUtil.hpp"
 #include "memory"
 
 #include "Socket.hpp"
 #include "Log.hpp"
-
-#include <Poco/Net/SocketAddress.h>
 
 class SocketFactory
 {
@@ -103,18 +102,16 @@ public:
         if (events & POLLIN)
         {
             std::shared_ptr<Socket> clientSocket = accept();
-            if (!clientSocket)
+            if (clientSocket)
             {
-                const std::string msg = "Failed to accept. (errno: ";
-                throw std::runtime_error(msg + std::strerror(errno) + ')');
+                LOGA_TRC(Socket, "Accepted client #" << clientSocket->getFD() << ", " << *clientSocket);
+                _clientPoller.insertNewSocket(std::move(clientSocket));
             }
-
-            LOG_TRC("Accepted client #" << clientSocket->getFD());
-            _clientPoller.insertNewSocket(std::move(clientSocket));
         }
     }
 
 protected:
+    bool isUnrecoverableAcceptError(const int cause);
     /// Create a Socket instance from the accepted socket FD.
     std::shared_ptr<Socket> createSocketFromAccept(int fd, Socket::Type type) const
     {

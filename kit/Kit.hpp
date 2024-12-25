@@ -20,6 +20,7 @@
 #include <common/Session.hpp>
 #include <common/ThreadPool.hpp>
 #include <kit/KitQueue.hpp>
+#include <kit/LogUI.hpp>
 
 #include <wsd/TileDesc.hpp>
 
@@ -186,7 +187,6 @@ public:
 #endif
 };
 
-class KitQueue;
 class ChildSession;
 
 /// A document container.
@@ -196,7 +196,7 @@ class ChildSession;
 /// per process. But for security reasons don't.
 /// However, we could have a coolkit instance
 /// per user or group of users (a trusted circle).
-class Document final : public std::enable_shared_from_this<Document>
+class Document final : public std::enable_shared_from_this<Document>, private TilePrioritizer
 {
 public:
     Document(const std::shared_ptr<lok::Office>& loKit, const std::string& jailId,
@@ -248,6 +248,7 @@ public:
     }
 
     unsigned getMobileAppDocId() const { return _mobileAppDocId; }
+    const std::string getDocId() const { return _docId; }
 
     /// See if we should clear out our memory
     void trimIfInactive();
@@ -266,6 +267,9 @@ private:
 
     /// Cleanup bgSave child processes.
     static void reapZombieChildren();
+
+    /// Calculate tile rendering priority from a TileDesc
+    virtual float getTilePriority(const std::chrono::steady_clock::time_point &now, const TileDesc &desc) const override;
 
 public:
     /// Request loading a document, or a new view, if one exists,
@@ -327,14 +331,19 @@ private:
                                         const std::string& spellOnline, const std::string& theme,
                                         const std::string& backgroundTheme,
                                         const std::string& userPrivateInfo);
-    bool isTileRequestInsideVisibleArea(const TileCombined& tileCombined);
 
 public:
     bool processInputEnabled() const;
 
     /// A new message from wsd for the queue
     void queueMessage(const std::string &msg) { _queue->put(msg); }
+    /// Do we have incoming messages from wsd ?
     bool hasQueueItems() const { return _queue && !_queue->isEmpty(); }
+    bool canRenderTiles() const {
+        return processInputEnabled() && !isLoadOngoing() &&
+            !isBackgroundSaveProcess() && _queue &&
+            _queue->getTileQueueSize() > 0;
+    }
     bool hasCallbacks() const { return _queue && _queue->callbackSize() > 0; }
 
     /// Should we get through the SocketPoll fast to process queus ?
@@ -342,7 +351,10 @@ public:
     {
         if (hasCallbacks())
             return true;
-        if (hasQueueItems() && processInputEnabled())
+        // not processing input messages or tile renders
+        if (!processInputEnabled())
+            return false;
+        if (hasQueueItems() || canRenderTiles())
             return true;
         return false;
     }
@@ -391,7 +403,7 @@ public:
     /// Are we currently performing a load ?
     bool isLoadOngoing() const { return _duringLoad > 0; }
 
-    std::shared_ptr<KitQueue> getQueue() const { return _queue; }
+    LogUiCmd& getLogUiCmd() { return logUiCmd; }
 
 private:
     void postForceModifiedCommand(bool modified);
@@ -415,7 +427,7 @@ private:
 #ifdef __ANDROID__
     static std::shared_ptr<lok::Document> _loKitDocumentForAndroidOnly;
 #endif
-    std::shared_ptr<KitQueue> _queue;
+    std::unique_ptr<KitQueue> _queue;
 
     // Connection to the coolwsd process
     std::shared_ptr<WebSocketHandler> _websocketHandler;
@@ -458,6 +470,8 @@ private:
 
     const unsigned _mobileAppDocId;
     int _duringLoad;
+
+    LogUiCmd logUiCmd;
 };
 
 /// main function of the forkit process or thread

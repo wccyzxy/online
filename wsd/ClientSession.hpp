@@ -178,7 +178,7 @@ public:
     }
 
     /// Set WOPI fileinfo object
-    void setWopiFileInfo(std::unique_ptr<WopiStorage::WOPIFileInfo>& wopiFileInfo) { _wopiFileInfo = std::move(wopiFileInfo); }
+    void setWopiFileInfo(std::unique_ptr<WopiStorage::WOPIFileInfo> wopiFileInfo) { _wopiFileInfo = std::move(wopiFileInfo); }
 
     /// Get requested tiles waiting for sending to the client
     std::deque<TileDesc>& getRequestedTiles() { return _requestedTiles; }
@@ -270,7 +270,7 @@ public:
     /// Process an SVG to replace embedded file:/// media URIs with public http URLs.
     std::string processSVGContent(const std::string& svg);
 
-    int  getCanonicalViewId() { return _canonicalViewId; }
+    int  getCanonicalViewId() const { return _canonicalViewId; }
 
 private:
     std::shared_ptr<ClientSession> client_from_this()
@@ -288,6 +288,8 @@ private:
     void writeQueuedMessages(std::size_t capacity) override;
 
     virtual bool _handleInput(const char* buffer, int length) override;
+
+    bool handleSignatureAction(const StringVector& tokens);
 
     bool loadDocument(const char* buffer, int length, const StringVector& tokens,
                       const std::shared_ptr<DocumentBroker>& docBroker);

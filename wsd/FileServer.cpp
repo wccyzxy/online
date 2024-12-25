@@ -180,7 +180,7 @@ bool isConfigAuthOk(const std::string& userProvidedUsr, const std::string& userP
             return false;
         }
 
-        unsigned char userProvidedPwdHash[tokens[4].size() / 2];
+        auto userProvidedPwdHash = static_cast<unsigned char*>(alloca(tokens[4].size() / 2));
         PKCS5_PBKDF2_HMAC(userProvidedPwd.c_str(), -1,
                           saltData.data(), saltData.size(),
                           std::stoi(tokens[2]),
@@ -287,7 +287,7 @@ bool FileServerRequestHandler::authenticateAdmin(const Poco::Net::HTTPBasicCrede
     }
 
     // Check if the user is allowed to use the admin console
-    if (COOLWSD::getConfigValue<bool>("admin_console.enable_pam", false))
+    if (ConfigUtil::getConfigValue<bool>("admin_console.enable_pam", false))
     {
         // use PAM - it needs the username too
         if (!isPamAuthOk(userProvidedUsr, userProvidedPwd))
@@ -307,7 +307,7 @@ bool FileServerRequestHandler::authenticateAdmin(const Poco::Net::HTTPBasicCrede
     Poco::Net::HTTPCookie cookie("jwt", jwtToken);
     // bundlify appears to add an extra /dist -> dist/dist/admin
     cookie.setPath(COOLWSD::ServiceRoot + "/browser/dist/");
-    cookie.setSecure(COOLWSD::isSSLEnabled());
+    cookie.setSecure(ConfigUtil::isSslEnabled());
     response.header().addCookie(cookie.toString());
 
     return true;
@@ -427,8 +427,20 @@ bool FileServerRequestHandler::isAdminLoggedIn(const HTTPRequest& request, http:
             std::string userNameString = "LocalUser#" + userId;
             Poco::JSON::Object::Ptr fileInfo = new Poco::JSON::Object();
 
+            Poco::JSON::Object::Ptr wopi = new Poco::JSON::Object();
+            // If there is matching WOPI data next to the file to be loaded, use it.
+            std::string wopiString = readFileToString(localPath + ".wopi.json");
+            if (!wopiString.empty())
+            {
+                if (JsonUtil::parseJSON(wopiString, wopi))
+                {
+                    fileInfo = wopi;
+                }
+            }
+
             std::string postMessageOrigin;
-            config::isSslEnabled() ? postMessageOrigin = "https://" : postMessageOrigin = "http://";
+            ConfigUtil::isSslEnabled() ? postMessageOrigin = "https://"
+                                       : postMessageOrigin = "http://";
             postMessageOrigin += requestDetails.getHostUntrusted();
 
             fileInfo->set("BaseFileName", localFile->fileName);
@@ -437,26 +449,6 @@ bool FileServerRequestHandler::isAdminLoggedIn(const HTTPRequest& request, http:
             fileInfo->set("OwnerId", "test");
             fileInfo->set("UserId", userId);
             fileInfo->set("UserFriendlyName", userNameString);
-
-            Poco::JSON::Object::Ptr userPrivateInfo = new Poco::JSON::Object();
-            // If there is matching sign data next to the file to be loaded, use it.
-            std::string signatureCert = readFileToString(localPath + ".cert.pem");
-            if (!signatureCert.empty())
-            {
-                userPrivateInfo->set("SignatureCert", signatureCert);
-            }
-            std::string signatureKey = readFileToString(localPath + ".key.pem");
-            if (!signatureKey.empty())
-            {
-                userPrivateInfo->set("SignatureKey", signatureKey);
-            }
-            std::string signatureCa = readFileToString(localPath + ".ca.pem");
-            if (!signatureCa.empty())
-            {
-                userPrivateInfo->set("SignatureCa", signatureCa);
-            }
-            fileInfo->set("UserPrivateInfo", userPrivateInfo);
-
             fileInfo->set("UserCanWrite", (requestDetails.getParam("permission") != "readonly") ? "true": "false");
             fileInfo->set("PostMessageOrigin", postMessageOrigin);
             fileInfo->set("LastModifiedTime", localFile->getLastModifiedTime());
@@ -935,10 +927,10 @@ void FileServerRequestHandler::readDirToHash(const std::string &basePath, const 
             std::string compressedFile;
             const long unsigned int compSize = compressBound(size);
             compressedFile.resize(compSize);
-            strm.next_in = (unsigned char*)&uncompressedFile[0];
+            strm.next_in = (unsigned char*)uncompressedFile.data();
             strm.avail_in = size;
             strm.avail_out = compSize;
-            strm.next_out = (unsigned char*)&compressedFile[0];
+            strm.next_out = (unsigned char*)compressedFile.data();
             strm.total_out = strm.total_in = 0;
 
             const int deflateResult = deflate(&strm, Z_FINISH);
@@ -1300,7 +1292,7 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
     Poco::replaceInPlace(preprocess, std::string("%ENABLE_DEBUG%"), enableDebugStr);
 
     static const std::string hexifyEmbeddedUrls =
-        COOLWSD::getConfigValue<bool>("hexify_embedded_urls", false) ? "true" : "false";
+        ConfigUtil::getConfigValue<bool>("hexify_embedded_urls", false) ? "true" : "false";
     Poco::replaceInPlace(preprocess, std::string("%HEXIFY_URL%"), hexifyEmbeddedUrls);
 
     static const std::string useStatusbarSaveIndicator =
@@ -1319,7 +1311,7 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
     std::string brandCSS(Poco::format(linkCSS, responseRoot, std::string(BRANDING)));
     std::string brandJS(Poco::format(scriptJS, responseRoot, std::string(BRANDING)));
 
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
     {
         const std::string keyString = config.getString("support_key", "");
         SupportKey key(keyString);
@@ -1400,7 +1392,7 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
     Poco::replaceInPlace(preprocess, std::string("%ENABLE_MACROS_EXECUTION%"), enableMacrosExecution);
 
 
-    if (!config.getBool("feedback.show", true) && config.getBool("home_mode.enable", false))
+    if (config.getBool("home_mode.enable", false))
     {
         Poco::replaceInPlace(preprocess, std::string("%AUTO_SHOW_FEEDBACK%"), (std::string)"false");
     }
@@ -1420,17 +1412,24 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
     Poco::replaceInPlace(preprocess, std::string("%DEEPL_ENABLED%"), boolToString(config.getBool("deepl.enabled", false)));
     Poco::replaceInPlace(preprocess, std::string("%ZOTERO_ENABLED%"), boolToString(config.getBool("zotero.enable", true)));
     Poco::replaceInPlace(preprocess, std::string("%DOCUMENT_SIGNING_ENABLED%"), boolToString(config.getBool("document_signing.enable", true)));
-    Poco::replaceInPlace(preprocess, std::string("%WASM_ENABLED%"), boolToString(COOLWSD::getConfigValue<bool>("wasm.enable", false)));
+    Poco::replaceInPlace(preprocess, std::string("%WASM_ENABLED%"), boolToString(ConfigUtil::getConfigValue<bool>("wasm.enable", false)));
+    Poco::replaceInPlace(preprocess, std::string("%CANVAS_SLIDESHOW_ENABLED%"), boolToString(ConfigUtil::getConfigValue<bool>("canvas_slideshow_enabled", true)));
     Poco::URI indirectionURI(config.getString("indirection_endpoint.url", ""));
     Poco::replaceInPlace(preprocess, std::string("%INDIRECTION_URL%"), indirectionURI.toString());
 
     std::string extraExportFormats;
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_swf", false)) extraExportFormats += " impress_swf";
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_bmp", false)) extraExportFormats += " impress_bmp";
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_gif", false)) extraExportFormats += " impress_gif";
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_png", false)) extraExportFormats += " impress_png";
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_svg", false)) extraExportFormats += " impress_svg";
-    if (COOLWSD::getConfigValue<bool>("extra_export_formats.impress_tiff", false)) extraExportFormats += " impress_tiff";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_swf", false))
+        extraExportFormats += " impress_swf";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_bmp", false))
+        extraExportFormats += " impress_bmp";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_gif", false))
+        extraExportFormats += " impress_gif";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_png", false))
+        extraExportFormats += " impress_png";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_svg", false))
+        extraExportFormats += " impress_svg";
+    if (ConfigUtil::getConfigValue<bool>("extra_export_formats.impress_tiff", false))
+        extraExportFormats += " impress_tiff";
     Poco::replaceInPlace(preprocess, std::string("%EXTRA_EXPORT_FORMATS%"), extraExportFormats);
 
     bool geoLocationSetup = config.getBool("indirection_endpoint.geolocation_setup.enable", false);
@@ -1440,8 +1439,6 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
 
     const std::string mimeType = "text/html";
 
-    // Document signing: if endpoint URL is configured, whitelist that for
-    // iframe purposes.
     ContentSecurityPolicy csp;
     csp.appendDirective("default-src", "'none'");
     csp.appendDirective("frame-src", "'self'");
@@ -1564,7 +1561,8 @@ FileServerRequestHandler::ResourceAccessDetails FileServerRequestHandler::prepro
     httpResponse.add("Content-Security-Policy", csp.generate());
 
     // Setup HTTP Public key pinning
-    if ((COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination()) && config.getBool("ssl.hpkp[@enable]", false))
+    if ((ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination()) &&
+        config.getBool("ssl.hpkp[@enable]", false))
     {
         size_t i = 0;
         std::string pinPath = "ssl.hpkp.pins.pin[" + std::to_string(i) + ']';
@@ -1674,7 +1672,7 @@ void FileServerRequestHandler::preprocessAdminFile(const HTTPRequest& request,
 
         // New login, log.
         static bool showLog =
-            COOLWSD::getConfigValue<bool>("admin_console.logging.admin_login", true);
+            ConfigUtil::getConfigValue<bool>("admin_console.logging.admin_login", true);
         if (showLog)
         {
             LOG_ANY("Admin logged in with source IPAddress [" << socket->clientAddress() << ']');
@@ -1717,7 +1715,7 @@ void FileServerRequestHandler::preprocessAdminFile(const HTTPRequest& request,
     std::string brandJS(Poco::format(scriptJS, responseRoot, std::string(BRANDING)));
     std::string brandFooter;
 
-    if (config::isSupportKeyEnabled())
+    if constexpr (ConfigUtil::isSupportKeyEnabled())
     {
         const auto& config = Application::instance().config();
         const std::string keyString = config.getString("support_key", "");

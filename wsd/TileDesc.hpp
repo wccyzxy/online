@@ -132,6 +132,11 @@ public:
                _mode == other._mode;
     }
 
+    bool operator!=(const TileDesc& other) const
+    {
+        return !(*this == other);
+    }
+
     // used to cache a hash of the key elements compared in ==
     uint32_t equalityHash() const
     {
@@ -150,8 +155,17 @@ public:
     /// Returns the tile's AABBox, i.e. tile-position + tile-extend
     Util::Rectangle toAABBox() const
     {
-        return Util::Rectangle::create(getTilePosX(), getTilePosY(),
-                 getTilePosX()+getTileWidth(), getTilePosY()+getTileHeight());
+        long x2 = getTilePosX();
+        if (x2 + getTileWidth() <= std::numeric_limits<int>::max())
+        {
+            x2 += getTileWidth();
+        }
+        long y2 = getTilePosY();
+        if (y2 + getTileHeight() <= std::numeric_limits<int>::max())
+        {
+            y2 += getTileHeight();
+        }
+        return Util::Rectangle::create(getTilePosX(), getTilePosY(), x2, y2);
     }
 
     /// Returns whether the given rectangle `a` intersects (partially contains) the given rectangle `b`.
@@ -229,6 +243,9 @@ public:
 
     bool canCombine(const TileDesc& other) const
     {
+        if (isPreview() || other.isPreview())
+            return false;
+
         if (!onSameRow(other))
             return false;
 
@@ -427,10 +444,11 @@ private:
             _tileWidth <= 0 ||
             _tileHeight <= 0)
         {
-            throw BadArgumentException("Invalid tilecombine descriptor. Elements: " +
-                    std::to_string(_part) + " " + std::to_string(_mode) + " " +
-                    std::to_string(_width) + " " + std::to_string(_height) + " " +
-                    std::to_string(_tileWidth) + " " + std::to_string(_tileHeight));
+            throw BadArgumentException(
+                "Invalid tilecombine descriptor. Elements: " + std::to_string(_part) + ' ' +
+                std::to_string(_mode) + ' ' + std::to_string(_width) + ' ' +
+                std::to_string(_height) + ' ' + std::to_string(_tileWidth) + ' ' +
+                std::to_string(_tileHeight));
         }
 
         StringVector positionXtokens(StringVector::tokenize(tilePositionsX, ','));
@@ -536,12 +554,12 @@ public:
     std::vector<TileDesc>& getTiles() { return _tiles; }
     void setHasOldWireId() { _hasOldWids = true; }
 
-    void setNormalizedViewId(int nViewId)
+    void setNormalizedViewId(int viewId)
     {
         for (auto& tile : _tiles)
-            tile.setNormalizedViewId(nViewId);
+            tile.setNormalizedViewId(viewId);
 
-        _normalizedViewId = nViewId;
+        _normalizedViewId = viewId;
     }
 
     bool hasDuplicates() const

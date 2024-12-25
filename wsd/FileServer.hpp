@@ -11,12 +11,13 @@
 
 #pragma once
 
-#include <string>
-#include <unordered_map>
-
+#include <COOLWSD.hpp>
+#include <ConfigUtil.hpp>
 #include <HttpRequest.hpp>
 #include <Socket.hpp>
-#include <COOLWSD.hpp>
+
+#include <string>
+#include <unordered_map>
 
 class RequestDetails;
 
@@ -171,13 +172,13 @@ public:
     {
         // HSTS hardening. Disabled in debug builds.
 #if !ENABLE_DEBUG
-        if (COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination())
+        if (ConfigUtil::isSslEnabled() || ConfigUtil::isSSLTermination())
         {
-            if (COOLWSD::getConfigValue<bool>("ssl.sts.enabled", false))
+            if (ConfigUtil::getConfigValue<bool>("ssl.sts.enabled", false))
             {
                 // Only for release, which doesn't support tests. No CONFIG_STATIC, therefore.
                 static const auto maxAge =
-                    COOLWSD::getConfigValue<int>("ssl.sts.max_age", 31536000); // Default 1 year.
+                    ConfigUtil::getConfigValue<int>("ssl.sts.max_age", 31536000); // Default 1 year.
                 response.add("Strict-Transport-Security",
                              "max-age=" + std::to_string(maxAge) + "; includeSubDomains");
             }
